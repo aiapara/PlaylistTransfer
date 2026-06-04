@@ -6,15 +6,19 @@ dotenv.config();
 const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   PORT: z.coerce.number().default(4000),
+  DESKTOP_MODE: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((value) => value === "true"),
   FRONTEND_URL: z.string().url().default("http://localhost:5173"),
   SESSION_SECRET: z.string().min(24),
   TOKEN_ENCRYPTION_KEY: z.string().min(32),
   DATABASE_PATH: z.string().default("./data/playlist-transfer.db"),
-  SPOTIFY_CLIENT_ID: z.string().min(1),
-  SPOTIFY_CLIENT_SECRET: z.string().min(1),
+  SPOTIFY_CLIENT_ID: z.string().default(""),
+  SPOTIFY_CLIENT_SECRET: z.string().default(""),
   SPOTIFY_REDIRECT_URI: z.string().url(),
-  GOOGLE_CLIENT_ID: z.string().min(1),
-  GOOGLE_CLIENT_SECRET: z.string().min(1),
+  GOOGLE_CLIENT_ID: z.string().default(""),
+  GOOGLE_CLIENT_SECRET: z.string().default(""),
   GOOGLE_REDIRECT_URI: z.string().url(),
   MATCH_CONFIDENCE_THRESHOLD: z.coerce.number().min(0).max(1).default(0.72),
   TRANSFER_BATCH_SIZE: z.coerce.number().int().positive().default(20),

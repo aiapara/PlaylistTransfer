@@ -64,7 +64,7 @@ Sources:
    - Add redirect URI: `http://localhost:4000/api/auth/youtube/callback`
    - OAuth scope used: `https://www.googleapis.com/auth/youtube.force-ssl`
 
-6. Run locally:
+6. Run the web development app:
 
    ```bash
    npm run dev
@@ -73,16 +73,29 @@ Sources:
    Frontend: http://localhost:5173  
    Backend: http://localhost:4000
 
-## Production Deployment
+## Desktop App
 
-- Use HTTPS only.
-- Set `NODE_ENV=production`.
-- Use strong `SESSION_SECRET` and a stable 32-byte `TOKEN_ENCRYPTION_KEY`.
-- Store `.env` in a secret manager.
-- Use a persistent database path or replace SQLite with Postgres.
-- Restrict OAuth redirect URIs to your production domain.
-- Review Google OAuth verification requirements if the app is used beyond personal/internal use.
-- Keep logs free of tokens and personally sensitive data.
+This repo now favors a local Electron desktop app over hosted deployment. The desktop app starts the existing Node backend on `127.0.0.1:4000`, serves the built React frontend from that local backend, stores OAuth tokens in a local SQLite database, and stores desktop configuration in Electron's user-data directory.
+
+Run it with:
+
+```bash
+npm run desktop
+```
+
+On first launch, the app creates a local `playlist-transfer.env` file in Electron's user-data directory. Add the Spotify and Google OAuth credentials there, using these redirect URIs:
+
+- `http://127.0.0.1:4000/api/auth/spotify/callback`
+- `http://127.0.0.1:4000/api/auth/youtube/callback`
+
+The generated local config includes stable `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_PATH` values. Keep those values if you want previously stored tokens to remain readable.
+
+## Architecture Notes
+
+- The React frontend is reused as-is and continues to call same-origin `/api/*` routes.
+- The Node backend is reused inside Electron and still owns OAuth callbacks, playlist reads, matching, transfer execution, and CSV export.
+- The SQLite token and transfer store remains local-only.
+- Hosted-server deployment, remote secret managers, and multi-user infrastructure are no longer part of the recommended path.
 
 ## MVP Limitations
 

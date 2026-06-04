@@ -31,6 +31,7 @@ type YouTubeSearchItem = {
 };
 
 export function youtubeLoginUrl(state: string): string {
+  assertYoutubeConfig();
   return `${GOOGLE_AUTH}?${new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
     redirect_uri: env.GOOGLE_REDIRECT_URI,
@@ -43,6 +44,7 @@ export function youtubeLoginUrl(state: string): string {
 }
 
 export async function exchangeYoutubeCode(code: string): Promise<void> {
+  assertYoutubeConfig();
   const token = await fetchJson<GoogleTokenResponse>(GOOGLE_TOKEN, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -64,6 +66,7 @@ export async function exchangeYoutubeCode(code: string): Promise<void> {
 }
 
 export async function getYoutubeAccessToken(): Promise<string> {
+  assertYoutubeConfig();
   const token = getToken("youtube");
   if (!token) throw new Error("YouTube is not connected.");
   if (token.expiresAt > Date.now() + 60_000) return token.accessToken;
@@ -88,6 +91,12 @@ export async function getYoutubeAccessToken(): Promise<string> {
   });
 
   return refreshed.access_token;
+}
+
+function assertYoutubeConfig(): void {
+  if (!env.GOOGLE_CLIENT_ID || !env.GOOGLE_CLIENT_SECRET) {
+    throw new Error("Configure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the local desktop config file.");
+  }
 }
 
 async function youtubeRequest<T>(path: string, init?: RequestInit): Promise<T> {

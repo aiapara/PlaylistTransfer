@@ -3,6 +3,7 @@ import cors from "cors";
 import express from "express";
 import session from "express-session";
 import helmet from "helmet";
+import path from "node:path";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { ZodError } from "zod";
@@ -14,16 +15,24 @@ import { transfersRouter } from "./routes/transfers.js";
 
 export const logger = pino({ level: env.NODE_ENV === "production" ? "info" : "debug" });
 
-export function createApp() {
+export type AppOptions = {
+  desktopMode?: boolean;
+  staticDir?: string;
+};
+
+export function createApp(options: AppOptions = {}) {
+  const desktopMode = options.desktopMode ?? env.DESKTOP_MODE;
   const app = express();
 
-  app.use(helmet());
-  app.use(
-    cors({
-      origin: env.FRONTEND_URL,
-      credentials: true
-    })
-  );
+  app.use(helmet({ contentSecurityPolicy: desktopMode ? false : undefined }));
+  if (!desktopMode) {
+    app.use(
+      cors({
+        origin: env.FRONTEND_URL,
+        credentials: true
+      })
+    );
+  }
   app.use(express.json({ limit: "1mb" }));
   app.use(cookieParser());
   app.use(
@@ -34,7 +43,7 @@ export function createApp() {
       saveUninitialized: false,
       cookie: {
         httpOnly: true,
-        secure: env.NODE_ENV === "production",
+        secure: env.NODE_ENV === "production" && !desktopMode,
         sameSite: "lax",
         maxAge: 1000 * 60 * 60
       }
@@ -46,6 +55,13 @@ export function createApp() {
   app.use("/api/auth", authRouter);
   app.use("/api/playlists", playlistsRouter);
   app.use("/api/transfers", transfersRouter);
+
+  if (options.staticDir) {
+    app.use(express.static(options.staticDir));
+    app.get(/^(?!\/api\/|\/health$).*/, (_req, res) => {
+      res.sendFile(path.join(options.staticDir!, "index.html"));
+    });
+  }
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     if (error instanceof ZodError) {

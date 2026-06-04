@@ -27,7 +27,7 @@ authRouter.get("/spotify/callback", async (req, res, next) => {
   try {
     assertState(req, String(req.query.state ?? ""));
     await exchangeSpotifyCode(String(req.query.code ?? ""));
-    res.redirect(`${env.FRONTEND_URL}/?connected=spotify`);
+    res.redirect(callbackRedirectUrl("spotify"));
   } catch (error) {
     next(error);
   }
@@ -42,7 +42,7 @@ authRouter.get("/youtube/callback", async (req, res, next) => {
   try {
     assertState(req, String(req.query.state ?? ""));
     await exchangeYoutubeCode(String(req.query.code ?? ""));
-    res.redirect(`${env.FRONTEND_URL}/?connected=youtube`);
+    res.redirect(callbackRedirectUrl("youtube"));
   } catch (error) {
     next(error);
   }
@@ -59,4 +59,8 @@ function assertState(req: Request, actual: string): void {
     throw new Error("OAuth state validation failed.");
   }
   req.session.oauthState = undefined;
+}
+
+function callbackRedirectUrl(provider: "spotify" | "youtube"): string {
+  return env.DESKTOP_MODE ? `/?connected=${provider}` : `${env.FRONTEND_URL}/?connected=${provider}`;
 }

@@ -53,6 +53,7 @@ async function spotifyRequest<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function spotifyLoginUrl(state: string): string {
+  assertSpotifyConfig();
   const scopes = [
     "playlist-read-private",
     "playlist-read-collaborative",
@@ -70,6 +71,7 @@ export function spotifyLoginUrl(state: string): string {
 }
 
 export async function exchangeSpotifyCode(code: string): Promise<void> {
+  assertSpotifyConfig();
   const basic = Buffer.from(`${env.SPOTIFY_CLIENT_ID}:${env.SPOTIFY_CLIENT_SECRET}`).toString("base64");
   const token = await fetchJson<SpotifyTokenResponse>(`${SPOTIFY_ACCOUNTS}/api/token`, {
     method: "POST",
@@ -99,6 +101,7 @@ export async function exchangeSpotifyCode(code: string): Promise<void> {
 }
 
 export async function getSpotifyAccessToken(): Promise<string> {
+  assertSpotifyConfig();
   const token = getToken("spotify");
   if (!token) throw new Error("Spotify is not connected.");
   if (token.expiresAt > Date.now() + 60_000) return token.accessToken;
@@ -125,6 +128,12 @@ export async function getSpotifyAccessToken(): Promise<string> {
   });
 
   return refreshed.access_token;
+}
+
+function assertSpotifyConfig(): void {
+  if (!env.SPOTIFY_CLIENT_ID || !env.SPOTIFY_CLIENT_SECRET) {
+    throw new Error("Configure SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in the local desktop config file.");
+  }
 }
 
 export async function listSpotifyPlaylists(): Promise<SourcePlaylist[]> {

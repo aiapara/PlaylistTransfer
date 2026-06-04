@@ -1,0 +1,22 @@
+{
+  "name": "@playlist-transfer/desktop",
+  "version": "0.1.0",
+  "productName": "Playlist Transfer",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "electron dist/main.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@playlist-transfer/backend": "0.1.0",
+    "dotenv": "^16.5.0",
+    "electron": "^31.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.18",
+    "typescript": "^5.8.3"
+  }
+}
