@@ -1,0 +1,22 @@
+{
+  "name": "playlist-transfer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Transfer Spotify playlists, including Liked Songs, to YouTube/YouTube Music-compatible playlists.",
+  "workspaces": [
+    "apps/backend",
+    "apps/frontend",
+    "packages/shared"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm run dev -w apps/backend\" \"npm run dev -w apps/frontend\"",
+    "build": "npm run build -w packages/shared && npm run build -w apps/backend && npm run build -w apps/frontend",
+    "typecheck": "npm run typecheck -w packages/shared && npm run typecheck -w apps/backend && npm run typecheck -w apps/frontend",
+    "lint": "npm run lint -w apps/backend && npm run lint -w apps/frontend",
+    "start": "npm run start -w apps/backend"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.8.3"
+  }
+}

@@ -1,0 +1,444 @@
+import type { AuthStatus, MatchResult, SourcePlaylist, TransferDetail, TransferSummary } from "@playlist-transfer/shared";
+import {
+  AlertCircle,
+  Check,
+  ChevronRight,
+  Download,
+  History,
+  ListMusic,
+  Moon,
+  Play,
+  RefreshCw,
+  Search,
+  Sun,
+  ThumbsUp,
+  Youtube
+} from "lucide-react";
+import type { ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { client } from "./api.js";
+
+type Step = "spotify" | "youtube" | "select" | "preview" | "transfer";
+
+export function App() {
+  const [auth, setAuth] = useState<AuthStatus>({ spotify: false, youtube: false });
+  const [playlists, setPlaylists] = useState<SourcePlaylist[]>([]);
+  const [selectedPlaylistId, setSelectedPlaylistId] = useState("liked-songs");
+  const [transfer, setTransfer] = useState<TransferDetail | undefined>();
+  const [history, setHistory] = useState<TransferSummary[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [dark, setDark] = useState(true);
+  const [filter, setFilter] = useState("");
+
+  const step: Step = !auth.spotify ? "spotify" : !auth.youtube ? "youtube" : !transfer ? "select" : transfer.status === "ready" ? "preview" : "transfer";
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = dark ? "dark" : "light";
+  }, [dark]);
+
+  useEffect(() => {
+    void refresh();
+  }, []);
+
+  useEffect(() => {
+    if (auth.spotify) void loadPlaylists();
+  }, [auth.spotify]);
+
+  useEffect(() => {
+    if (!transfer || !["matching", "running"].includes(transfer.status)) return;
+    const timer = window.setInterval(() => {
+      void client.transfer(transfer.id).then(setTransfer).catch(() => undefined);
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [transfer]);
+
+  const selectedPlaylist = playlists.find((playlist) => playlist.id === selectedPlaylistId);
+  const visiblePlaylists = playlists.filter((playlist) => playlist.title.toLowerCase().includes(filter.toLowerCase()));
+  const progress = transfer ? Math.round(((transfer.added + transfer.skipped + transfer.failed) / Math.max(transfer.matched, 1)) * 100) : 0;
+
+  async function refresh() {
+    setError("");
+    try {
+      const [status, transfers] = await Promise.all([client.status(), client.transfers()]);
+      setAuth(status);
+      setHistory(transfers);
+    } catch (err) {
+      setError(messageFor(err));
+    }
+  }
+
+  async function loadPlaylists() {
+    setError("");
+    try {
+      setPlaylists(await client.playlists());
+    } catch (err) {
+      setError(messageFor(err));
+    }
+  }
+
+  async function preview() {
+    if (!selectedPlaylist) return;
+    setBusy(true);
+    setError("");
+    try {
+      setTransfer(await client.preview(selectedPlaylist.id));
+      await refresh();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function startTransfer() {
+    if (!transfer) return;
+    setBusy(true);
+    setError("");
+    try {
+      setTransfer(await client.start(transfer.id));
+      await refresh();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function createSpotifyLikedPlaylist() {
+    setBusy(true);
+    setError("");
+    try {
+      await client.materializeLiked();
+      await loadPlaylists();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div>
+          <h1>Playlist Transfer</h1>
+          <p>Spotify playlists into YouTube playlists for YouTube Music listening.</p>
+        </div>
+        <div className="top-actions">
+          <button className="icon-button" onClick={() => setDark((value) => !value)} title="Toggle dark mode">
+            {dark ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+          <button className="icon-button" onClick={() => void refresh()} title="Refresh">
+            <RefreshCw size={18} />
+          </button>
+        </div>
+      </header>
+
+      {error && (
+        <div className="notice error">
+          <AlertCircle size={18} />
+          <span>{error}</span>
+        </div>
+      )}
+
+      <Workflow step={step} auth={auth} />
+
+      <section className="workspace">
+        <aside className="sidebar">
+          <AuthPanel auth={auth} />
+          <HistoryPanel history={history} onOpen={(id) => void client.transfer(id).then(setTransfer).catch((err) => setError(messageFor(err)))} />
+        </aside>
+
+        <section className="main-panel">
+          {step === "spotify" && <LoginGate provider="Spotify" href="/api/auth/spotify/login" icon={<ListMusic />} />}
+          {step === "youtube" && <LoginGate provider="YouTube Music" href="/api/auth/youtube/login" icon={<Youtube />} />}
+
+          {step === "select" && (
+            <PlaylistPicker
+              playlists={visiblePlaylists}
+              selectedId={selectedPlaylistId}
+              filter={filter}
+              busy={busy}
+              onFilter={setFilter}
+              onSelect={setSelectedPlaylistId}
+              onPreview={() => void preview()}
+              onMaterializeLiked={() => void createSpotifyLikedPlaylist()}
+            />
+          )}
+
+          {(step === "preview" || step === "transfer") && transfer && (
+            <TransferView
+              transfer={transfer}
+              progress={progress}
+              busy={busy}
+              onStart={() => void startTransfer()}
+              onBack={() => setTransfer(undefined)}
+            />
+          )}
+        </section>
+      </section>
+    </main>
+  );
+}
+
+function Workflow({ step, auth }: { step: Step; auth: AuthStatus }) {
+  const steps = [
+    { id: "spotify", label: "Spotify", done: auth.spotify },
+    { id: "youtube", label: "YouTube Music", done: auth.youtube },
+    { id: "select", label: "Select", done: ["preview", "transfer"].includes(step) },
+    { id: "preview", label: "Preview", done: step === "transfer" },
+    { id: "transfer", label: "Transfer", done: false }
+  ];
+
+  return (
+    <nav className="workflow">
+      {steps.map((item) => (
+        <div className={`step ${step === item.id ? "active" : ""} ${item.done ? "done" : ""}`} key={item.id}>
+          <span>{item.done ? <Check size={15} /> : item.label.slice(0, 1)}</span>
+          {item.label}
+        </div>
+      ))}
+    </nav>
+  );
+}
+
+function AuthPanel({ auth }: { auth: AuthStatus }) {
+  return (
+    <div className="panel compact">
+      <h2>Connections</h2>
+      <div className="status-line">
+        <ListMusic size={18} />
+        <span>Spotify</span>
+        <strong>{auth.spotify ? "Connected" : "Needed"}</strong>
+      </div>
+      <div className="status-line">
+        <Youtube size={18} />
+        <span>YouTube</span>
+        <strong>{auth.youtube ? "Connected" : "Needed"}</strong>
+      </div>
+    </div>
+  );
+}
+
+function HistoryPanel({ history, onOpen }: { history: TransferSummary[]; onOpen: (id: string) => void }) {
+  return (
+    <div className="panel compact">
+      <h2>
+        <History size={17} />
+        Transfers
+      </h2>
+      {history.length === 0 ? (
+        <p className="muted">No transfer history yet.</p>
+      ) : (
+        <div className="history-list">
+          {history.slice(0, 6).map((item) => (
+            <button key={item.id} onClick={() => onOpen(item.id)}>
+              <span>{item.playlistTitle}</span>
+              <small>{item.status}</small>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LoginGate({ provider, href, icon }: { provider: string; href: string; icon: ReactNode }) {
+  return (
+    <div className="login-gate">
+      <div className="login-icon">{icon}</div>
+      <h2>Connect {provider}</h2>
+      <p>OAuth opens in this window and returns here when the connection is ready.</p>
+      <a className="primary-button" href={href}>
+        Connect <ChevronRight size={18} />
+      </a>
+    </div>
+  );
+}
+
+function PlaylistPicker({
+  playlists,
+  selectedId,
+  filter,
+  busy,
+  onFilter,
+  onSelect,
+  onPreview,
+  onMaterializeLiked
+}: {
+  playlists: SourcePlaylist[];
+  selectedId: string;
+  filter: string;
+  busy: boolean;
+  onFilter: (value: string) => void;
+  onSelect: (id: string) => void;
+  onPreview: () => void;
+  onMaterializeLiked: () => void;
+}) {
+  return (
+    <>
+      <div className="section-head">
+        <div>
+          <h2>Select Playlist</h2>
+          <p>Liked Songs appears as a virtual playlist and can transfer directly.</p>
+        </div>
+        <button className="secondary-button" onClick={onMaterializeLiked} disabled={busy} title="Create private Spotify playlist from Liked Songs">
+          <ThumbsUp size={17} />
+          Create Liked Playlist
+        </button>
+      </div>
+
+      <label className="search-box">
+        <Search size={18} />
+        <input value={filter} onChange={(event) => onFilter(event.target.value)} placeholder="Search playlists" />
+      </label>
+
+      <div className="playlist-grid">
+        {playlists.map((playlist) => (
+          <button
+            className={`playlist-card ${selectedId === playlist.id ? "selected" : ""}`}
+            key={playlist.id}
+            onClick={() => onSelect(playlist.id)}
+          >
+            <div className="cover">{playlist.imageUrl ? <img src={playlist.imageUrl} alt="" /> : <ListMusic size={28} />}</div>
+            <div>
+              <h3>{playlist.title}</h3>
+              <p>{playlist.owner ?? (playlist.isLikedSongs ? "Virtual playlist" : "Spotify")}</p>
+              <small>{playlist.totalTracks.toLocaleString()} tracks</small>
+            </div>
+          </button>
+        ))}
+      </div>
+
+      <div className="footer-actions">
+        <button className="primary-button" onClick={onPreview} disabled={busy || !selectedId}>
+          {busy ? "Matching..." : "Preview Matches"}
+          <ChevronRight size={18} />
+        </button>
+      </div>
+    </>
+  );
+}
+
+function TransferView({
+  transfer,
+  progress,
+  busy,
+  onStart,
+  onBack
+}: {
+  transfer: TransferDetail;
+  progress: number;
+  busy: boolean;
+  onStart: () => void;
+  onBack: () => void;
+}) {
+  const groups = useMemo(
+    () => ({
+      matched: transfer.matches.filter((item) => item.status === "matched" && item.selected?.confidence === "high"),
+      review: transfer.matches.filter((item) => item.status === "review"),
+      unmatched: transfer.matches.filter((item) => item.status === "unmatched"),
+      skipped: transfer.matches.filter((item) => item.status === "skipped")
+    }),
+    [transfer.matches]
+  );
+
+  return (
+    <>
+      <div className="section-head">
+        <div>
+          <h2>{transfer.playlistTitle}</h2>
+          <p>{transfer.status} · {transfer.totalTracks.toLocaleString()} source tracks</p>
+        </div>
+        <div className="action-row">
+          <button className="secondary-button" onClick={onBack}>Back</button>
+          <a className="secondary-button" href={`/api/transfers/${transfer.id}/unmatched.csv`}>
+            <Download size={17} />
+            CSV
+          </a>
+          <button className="primary-button" onClick={onStart} disabled={busy || !["ready", "failed", "paused"].includes(transfer.status)}>
+            <Play size={17} />
+            {transfer.status === "failed" ? "Resume" : "Transfer"}
+          </button>
+        </div>
+      </div>
+
+      <div className="metrics">
+        <Metric label="Matched" value={transfer.matched} />
+        <Metric label="Review" value={transfer.review} />
+        <Metric label="Unmatched" value={transfer.unmatched} />
+        <Metric label="Added" value={transfer.added} />
+        <Metric label="Failed" value={transfer.failed} />
+      </div>
+
+      <div className="progress-wrap">
+        <div className="progress-label">
+          <span>Transfer progress</span>
+          <strong>{progress}%</strong>
+        </div>
+        <div className="progress-bar">
+          <span style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+
+      <MatchTable title="Matched" items={groups.matched} />
+      <MatchTable title="Manual Review" items={groups.review} />
+      <MatchTable title="Unmatched" items={groups.unmatched} />
+      <LogList transfer={transfer} />
+    </>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value.toLocaleString()}</strong>
+    </div>
+  );
+}
+
+function MatchTable({ title, items }: { title: string; items: MatchResult[] }) {
+  if (items.length === 0) return null;
+
+  return (
+    <section className="match-section">
+      <h3>{title}</h3>
+      <div className="match-list">
+        {items.slice(0, 80).map((item) => (
+          <div className="match-row" key={`${item.track.sourceId}-${item.status}`}>
+            <div>
+              <strong>{item.track.title}</strong>
+              <span>{item.track.artists.join(", ")}{item.track.album ? ` · ${item.track.album}` : ""}</span>
+            </div>
+            <div>
+              <strong>{item.selected?.title ?? "No match"}</strong>
+              <span>{item.selected ? `${item.selected.channelTitle} · ${(item.selected.score * 100).toFixed(0)}%` : item.reason}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LogList({ transfer }: { transfer: TransferDetail }) {
+  return (
+    <section className="match-section">
+      <h3>Operations Log</h3>
+      <div className="log-list">
+        {transfer.logs.slice(-40).map((log) => (
+          <div className={`log-line ${log.level}`} key={log.id}>
+            <span>{new Date(log.createdAt).toLocaleTimeString()}</span>
+            <p>{log.message}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function messageFor(error: unknown): string {
+  return error instanceof Error ? error.message : "Something went wrong.";
+}
