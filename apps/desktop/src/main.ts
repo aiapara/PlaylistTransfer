@@ -1,28 +1,47 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { app, BrowserWindow } from "electron";
+import { pathToFileURL } from "node:url";
+import { app, BrowserWindow, shell } from "electron";
 import dotenv from "dotenv";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 let mainWindow: BrowserWindow | undefined;
 let server: { close: () => void } | undefined;
 let localUrl = "";
 
+type BackendModule = {
+  createApp: (options: {
+    desktopMode: boolean;
+    staticDir: string;
+    configDir: string;
+    configPath: string;
+    openConfigFolder: () => Promise<void>;
+  }) => {
+    listen: (port: number, hostname: string, callback: () => void) => { close: () => void };
+  };
+  logger: {
+    info: (message: string) => void;
+  };
+};
+
 app.setName("Playlist Transfer");
 
 async function start() {
   const userDataPath = app.getPath("userData");
-  configureLocalEnvironment(userDataPath);
+  const configPath = configureLocalEnvironment(userDataPath);
 
-  const backendUrl = new URL("../../backend/dist/app.js", import.meta.url).href;
-  const { createApp, logger } = await import(backendUrl);
+  const backendUrl = pathToFileURL(path.resolve(__dirname, "../../backend/dist/app.js")).href;
+  const importModule = new Function("specifier", "return import(specifier)") as <T>(specifier: string) => Promise<T>;
+  const { createApp, logger } = await importModule<BackendModule>(backendUrl);
   const expressApp = createApp({
     desktopMode: true,
-    staticDir: path.resolve(__dirname, "../../frontend/dist")
+    staticDir: path.resolve(__dirname, "../../frontend/dist"),
+    configDir: userDataPath,
+    configPath,
+    openConfigFolder: async () => {
+      const error = await shell.openPath(userDataPath);
+      if (error) throw new Error(error);
+    }
   });
 
   const port = Number(process.env.PORT ?? 4000);
@@ -54,7 +73,7 @@ async function createWindow() {
   await mainWindow.loadURL(localUrl);
 }
 
-function configureLocalEnvironment(userDataPath: string): void {
+function configureLocalEnvironment(userDataPath: string): string {
   fs.mkdirSync(userDataPath, { recursive: true });
   const configPath = path.join(userDataPath, "playlist-transfer.env");
   ensureConfigFile(configPath, userDataPath);
@@ -73,6 +92,10 @@ function configureLocalEnvironment(userDataPath: string): void {
   process.env.GOOGLE_REDIRECT_URI =
     process.env.GOOGLE_REDIRECT_URI ?? `http://127.0.0.1:${process.env.PORT}/api/auth/youtube/callback`;
   process.env.DATABASE_PATH = process.env.DATABASE_PATH ?? path.join(userDataPath, "playlist-transfer.db");
+  process.env.DESKTOP_CONFIG_DIR = userDataPath;
+  process.env.DESKTOP_CONFIG_PATH = configPath;
+
+  return configPath;
 }
 
 function ensureConfigFile(configPath: string, userDataPath: string): void {

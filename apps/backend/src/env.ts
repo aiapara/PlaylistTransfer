@@ -12,7 +12,7 @@ const schema = z.object({
     .transform((value) => value === "true"),
   FRONTEND_URL: z.string().url().default("http://localhost:5173"),
   SESSION_SECRET: z.string().min(24),
-  TOKEN_ENCRYPTION_KEY: z.string().min(32),
+  TOKEN_ENCRYPTION_KEY: z.string().default(""),
   DATABASE_PATH: z.string().default("./data/playlist-transfer.db"),
   SPOTIFY_CLIENT_ID: z.string().default(""),
   SPOTIFY_CLIENT_SECRET: z.string().default(""),

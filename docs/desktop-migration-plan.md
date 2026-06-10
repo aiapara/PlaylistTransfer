@@ -97,4 +97,8 @@ Implemented as a conversion:
 - Backend local static serving added.
 - Desktop OAuth callback redirects added.
 - OAuth provider credentials now fail at login/use time instead of preventing app startup.
+- In-app desktop settings screen added for Spotify and Google credentials.
+- Settings validation added for required client IDs, client secrets, exact local redirect URIs, and the 32-byte base64 encryption key.
+- One-click config folder opening added through Electron.
+- Test Spotify login and Test YouTube login actions added from the setup screen.
 - Playlist transfer logic remains untouched.

@@ -11,6 +11,7 @@ import { env } from "./env.js";
 import "./db/index.js";
 import { authRouter } from "./routes/auth.js";
 import { playlistsRouter } from "./routes/playlists.js";
+import { createSettingsRouter } from "./routes/settings.js";
 import { transfersRouter } from "./routes/transfers.js";
 
 export const logger = pino({ level: env.NODE_ENV === "production" ? "info" : "debug" });
@@ -18,6 +19,9 @@ export const logger = pino({ level: env.NODE_ENV === "production" ? "info" : "de
 export type AppOptions = {
   desktopMode?: boolean;
   staticDir?: string;
+  configDir?: string;
+  configPath?: string;
+  openConfigFolder?: () => Promise<void> | void;
 };
 
 export function createApp(options: AppOptions = {}) {
@@ -52,6 +56,15 @@ export function createApp(options: AppOptions = {}) {
   app.use(pinoHttp({ logger }));
 
   app.get("/health", (_req, res) => res.json({ ok: true }));
+  app.use(
+    "/api/settings",
+    createSettingsRouter({
+      desktopMode,
+      configDir: options.configDir,
+      configPath: options.configPath,
+      openConfigFolder: options.openConfigFolder
+    })
+  );
   app.use("/api/auth", authRouter);
   app.use("/api/playlists", playlistsRouter);
   app.use("/api/transfers", transfersRouter);

@@ -39,32 +39,61 @@ Sources:
    npm install
    ```
 
-2. Create environment file:
+2. Start the desktop app:
+
+   ```bash
+   npm run desktop
+   ```
+
+3. On first launch, fill in the in-app Desktop Setup screen and click Save Settings.
+
+4. Configure Spotify:
+
+   - Create an app at https://developer.spotify.com/dashboard
+   - Add this exact redirect URI: `http://127.0.0.1:4000/api/auth/spotify/callback`
+   - Copy the Spotify Client ID and Client Secret into the app settings screen.
+   - Scopes used by the app: `playlist-read-private`, `playlist-read-collaborative`, `user-library-read`, `playlist-modify-private`
+
+5. Configure Google:
+
+   - Create an OAuth client in Google Cloud Console.
+   - Enable YouTube Data API v3.
+   - Add this exact redirect URI: `http://127.0.0.1:4000/api/auth/youtube/callback`
+   - Copy the Google Client ID and Client Secret into the app settings screen.
+   - OAuth scope used by the app: `https://www.googleapis.com/auth/youtube.force-ssl`
+
+The setup screen validates required IDs, secrets, redirect URIs, and the local token encryption key before enabling the transfer flow. Use Open Config Folder from the setup screen if you need to inspect the generated local config.
+
+## Web Development
+
+The web development app is still available for local development.
+
+1. Create environment file:
 
    ```bash
    cp .env.example .env
    ```
 
-3. Generate a token encryption key:
+2. Generate a token encryption key:
 
    ```bash
    node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
    ```
 
-4. Configure Spotify:
+3. Configure Spotify:
 
    - Create an app at https://developer.spotify.com/dashboard
    - Add redirect URI: `http://localhost:4000/api/auth/spotify/callback`
    - Scopes used: `playlist-read-private`, `playlist-read-collaborative`, `user-library-read`, `playlist-modify-private`
 
-5. Configure Google:
+4. Configure Google:
 
    - Create an OAuth client in Google Cloud Console.
    - Enable YouTube Data API v3.
    - Add redirect URI: `http://localhost:4000/api/auth/youtube/callback`
    - OAuth scope used: `https://www.googleapis.com/auth/youtube.force-ssl`
 
-6. Run the web development app:
+5. Run the web development app:
 
    ```bash
    npm run dev
@@ -83,7 +112,7 @@ Run it with:
 npm run desktop
 ```
 
-On first launch, the app creates a local `playlist-transfer.env` file in Electron's user-data directory. Add the Spotify and Google OAuth credentials there, using these redirect URIs:
+On first launch, the app creates a local `playlist-transfer.env` file in Electron's user-data directory and opens the in-app setup screen. Save Spotify and Google OAuth credentials there, using these redirect URIs:
 
 - `http://127.0.0.1:4000/api/auth/spotify/callback`
 - `http://127.0.0.1:4000/api/auth/youtube/callback`

@@ -151,10 +151,24 @@ a:hover {
   border: 1px solid color-mix(in srgb, var(--accent-2) 44%, transparent);
 }
 
+.notice.success {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, transparent);
+}
+
+.notice.stacked {
+  align-items: flex-start;
+}
+
+.notice ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
 .workflow {
   margin: 28px 0;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(6, 1fr);
   gap: 10px;
 }
 
@@ -268,6 +282,27 @@ a:hover {
   text-transform: capitalize;
 }
 
+.config-path {
+  display: grid;
+  gap: 5px;
+  padding: 10px 0 14px;
+  border-top: 1px solid var(--line);
+}
+
+.config-path span {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.config-path small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.full-width {
+  width: 100%;
+}
+
 .login-gate {
   min-height: 600px;
   display: grid;
@@ -315,6 +350,77 @@ a:hover {
   outline: 0;
   background: transparent;
   color: var(--text);
+}
+
+.settings-grid {
+  margin-top: 18px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.settings-section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background: var(--panel-2);
+  display: grid;
+  gap: 12px;
+}
+
+.section-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section-title-row h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.field {
+  display: grid;
+  gap: 7px;
+}
+
+.field span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.field input {
+  width: 100%;
+  min-height: 42px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  color: var(--text);
+  background: var(--panel);
+  outline: 0;
+}
+
+.field input:focus {
+  border-color: var(--accent);
+}
+
+.redirect-check {
+  min-height: 38px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, var(--line));
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--warning);
+  overflow-wrap: anywhere;
+}
+
+.redirect-check.ok {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--line));
+  color: var(--accent);
 }
 
 .playlist-grid {
@@ -517,6 +623,10 @@ a:hover {
 
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-grid {
+    grid-template-columns: 1fr;
   }
 
   .match-row {

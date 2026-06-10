@@ -4,24 +4,30 @@ import {
   Check,
   ChevronRight,
   Download,
+  FolderOpen,
   History,
   ListMusic,
   Moon,
   Play,
   RefreshCw,
+  Save,
   Search,
+  Settings,
   Sun,
   ThumbsUp,
   Youtube
 } from "lucide-react";
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
-import { client } from "./api.js";
+import { client, type DesktopSettings, type SettingsUpdate } from "./api.js";
 
-type Step = "spotify" | "youtube" | "select" | "preview" | "transfer";
+type Step = "setup" | "spotify" | "youtube" | "select" | "preview" | "transfer";
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus>({ spotify: false, youtube: false });
+  const [settings, setSettings] = useState<DesktopSettings | undefined>();
+  const [settingsForm, setSettingsForm] = useState<SettingsUpdate>(emptySettingsForm());
+  const [settingsMessage, setSettingsMessage] = useState("");
   const [playlists, setPlaylists] = useState<SourcePlaylist[]>([]);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState("liked-songs");
   const [transfer, setTransfer] = useState<TransferDetail | undefined>();
@@ -31,7 +37,18 @@ export function App() {
   const [dark, setDark] = useState(true);
   const [filter, setFilter] = useState("");
 
-  const step: Step = !auth.spotify ? "spotify" : !auth.youtube ? "youtube" : !transfer ? "select" : transfer.status === "ready" ? "preview" : "transfer";
+  const setupReady = settings?.setup.ready ?? false;
+  const step: Step = !setupReady
+    ? "setup"
+    : !auth.spotify
+      ? "spotify"
+      : !auth.youtube
+        ? "youtube"
+        : !transfer
+          ? "select"
+          : transfer.status === "ready"
+            ? "preview"
+            : "transfer";
 
   useEffect(() => {
     document.documentElement.dataset.theme = dark ? "dark" : "light";
@@ -40,6 +57,22 @@ export function App() {
   useEffect(() => {
     void refresh();
   }, []);
+
+  useEffect(() => {
+    if (!settings) return;
+    setSettingsForm({
+      spotify: {
+        clientId: settings.spotify.clientId,
+        clientSecret: "",
+        redirectUri: settings.spotify.redirectUri || settings.requiredRedirectUris.spotify
+      },
+      youtube: {
+        clientId: settings.youtube.clientId,
+        clientSecret: "",
+        redirectUri: settings.youtube.redirectUri || settings.requiredRedirectUris.youtube
+      }
+    });
+  }, [settings]);
 
   useEffect(() => {
     if (auth.spotify) void loadPlaylists();
@@ -60,9 +93,42 @@ export function App() {
   async function refresh() {
     setError("");
     try {
+      const nextSettings = await client.settings();
+      setSettings(nextSettings);
+      if (!nextSettings.setup.ready) {
+        setAuth({ spotify: false, youtube: false });
+        setHistory([]);
+        return;
+      }
+
       const [status, transfers] = await Promise.all([client.status(), client.transfers()]);
       setAuth(status);
       setHistory(transfers);
+    } catch (err) {
+      setError(messageFor(err));
+    }
+  }
+
+  async function saveSettings() {
+    setBusy(true);
+    setError("");
+    setSettingsMessage("");
+    try {
+      const nextSettings = await client.saveSettings(settingsForm);
+      setSettings(nextSettings);
+      setSettingsMessage("Settings saved.");
+      await refresh();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openConfigFolder() {
+    setError("");
+    try {
+      await client.openConfigFolder();
     } catch (err) {
       setError(messageFor(err));
     }
@@ -129,6 +195,9 @@ export function App() {
           <button className="icon-button" onClick={() => setDark((value) => !value)} title="Toggle dark mode">
             {dark ? <Sun size={18} /> : <Moon size={18} />}
           </button>
+          <button className="icon-button" onClick={() => setSettings((value) => value && { ...value, setup: { ...value.setup, ready: false } })} title="Settings">
+            <Settings size={18} />
+          </button>
           <button className="icon-button" onClick={() => void refresh()} title="Refresh">
             <RefreshCw size={18} />
           </button>
@@ -147,10 +216,23 @@ export function App() {
       <section className="workspace">
         <aside className="sidebar">
           <AuthPanel auth={auth} />
+          {settings?.configDir && <ConfigPanel settings={settings} onOpen={() => void openConfigFolder()} />}
           <HistoryPanel history={history} onOpen={(id) => void client.transfer(id).then(setTransfer).catch((err) => setError(messageFor(err)))} />
         </aside>
 
         <section className="main-panel">
+          {step === "setup" && settings && (
+            <SettingsPanel
+              settings={settings}
+              form={settingsForm}
+              busy={busy}
+              message={settingsMessage}
+              onChange={setSettingsForm}
+              onSave={() => void saveSettings()}
+              onOpenConfigFolder={() => void openConfigFolder()}
+            />
+          )}
+
           {step === "spotify" && <LoginGate provider="Spotify" href="/api/auth/spotify/login" icon={<ListMusic />} />}
           {step === "youtube" && <LoginGate provider="YouTube Music" href="/api/auth/youtube/login" icon={<Youtube />} />}
 
@@ -184,6 +266,7 @@ export function App() {
 
 function Workflow({ step, auth }: { step: Step; auth: AuthStatus }) {
   const steps = [
+    { id: "setup", label: "Setup", done: step !== "setup" },
     { id: "spotify", label: "Spotify", done: auth.spotify },
     { id: "youtube", label: "YouTube Music", done: auth.youtube },
     { id: "select", label: "Select", done: ["preview", "transfer"].includes(step) },
@@ -200,6 +283,25 @@ function Workflow({ step, auth }: { step: Step; auth: AuthStatus }) {
         </div>
       ))}
     </nav>
+  );
+}
+
+function ConfigPanel({ settings, onOpen }: { settings: DesktopSettings; onOpen: () => void }) {
+  return (
+    <div className="panel compact">
+      <h2>
+        <Settings size={17} />
+        Setup
+      </h2>
+      <div className="config-path">
+        <span>{settings.setup.ready ? "Ready" : "Needs setup"}</span>
+        {settings.configPath && <small>{settings.configPath}</small>}
+      </div>
+      <button className="secondary-button full-width" onClick={onOpen}>
+        <FolderOpen size={17} />
+        Open Config Folder
+      </button>
+    </div>
   );
 }
 
@@ -254,6 +356,146 @@ function LoginGate({ provider, href, icon }: { provider: string; href: string; i
         Connect <ChevronRight size={18} />
       </a>
     </div>
+  );
+}
+
+function SettingsPanel({
+  settings,
+  form,
+  busy,
+  message,
+  onChange,
+  onSave,
+  onOpenConfigFolder
+}: {
+  settings: DesktopSettings;
+  form: SettingsUpdate;
+  busy: boolean;
+  message: string;
+  onChange: (value: SettingsUpdate) => void;
+  onSave: () => void;
+  onOpenConfigFolder: () => void;
+}) {
+  return (
+    <>
+      <div className="section-head">
+        <div>
+          <h2>Desktop Setup</h2>
+          <p>Save OAuth credentials locally before connecting Spotify and YouTube.</p>
+        </div>
+        <button className="secondary-button" onClick={onOpenConfigFolder}>
+          <FolderOpen size={17} />
+          Open Config Folder
+        </button>
+      </div>
+
+      {settings.setup.errors.length > 0 && (
+        <div className="notice error stacked">
+          <AlertCircle size={18} />
+          <div>
+            <strong>Setup needs attention</strong>
+            <ul>
+              {settings.setup.errors.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
+      {message && <div className="notice success">{message}</div>}
+
+      <div className="settings-grid">
+        <CredentialSection
+          title="Spotify"
+          clientId={form.spotify.clientId}
+          clientSecret={form.spotify.clientSecret}
+          clientSecretSet={settings.spotify.clientSecretSet}
+          redirectUri={form.spotify.redirectUri}
+          requiredRedirectUri={settings.requiredRedirectUris.spotify}
+          testHref="/api/auth/spotify/login"
+          onClientId={(clientId) => onChange({ ...form, spotify: { ...form.spotify, clientId } })}
+          onClientSecret={(clientSecret) => onChange({ ...form, spotify: { ...form.spotify, clientSecret } })}
+          onRedirectUri={(redirectUri) => onChange({ ...form, spotify: { ...form.spotify, redirectUri } })}
+        />
+        <CredentialSection
+          title="YouTube"
+          clientId={form.youtube.clientId}
+          clientSecret={form.youtube.clientSecret}
+          clientSecretSet={settings.youtube.clientSecretSet}
+          redirectUri={form.youtube.redirectUri}
+          requiredRedirectUri={settings.requiredRedirectUris.youtube}
+          testHref="/api/auth/youtube/login"
+          onClientId={(clientId) => onChange({ ...form, youtube: { ...form.youtube, clientId } })}
+          onClientSecret={(clientSecret) => onChange({ ...form, youtube: { ...form.youtube, clientSecret } })}
+          onRedirectUri={(redirectUri) => onChange({ ...form, youtube: { ...form.youtube, redirectUri } })}
+        />
+      </div>
+
+      <div className="footer-actions">
+        <button className="primary-button" onClick={onSave} disabled={busy}>
+          <Save size={17} />
+          {busy ? "Saving..." : "Save Settings"}
+        </button>
+      </div>
+    </>
+  );
+}
+
+function CredentialSection({
+  title,
+  clientId,
+  clientSecret,
+  clientSecretSet,
+  redirectUri,
+  requiredRedirectUri,
+  testHref,
+  onClientId,
+  onClientSecret,
+  onRedirectUri
+}: {
+  title: string;
+  clientId: string;
+  clientSecret: string;
+  clientSecretSet: boolean;
+  redirectUri: string;
+  requiredRedirectUri: string;
+  testHref: string;
+  onClientId: (value: string) => void;
+  onClientSecret: (value: string) => void;
+  onRedirectUri: (value: string) => void;
+}) {
+  return (
+    <section className="settings-section">
+      <div className="section-title-row">
+        <h3>{title}</h3>
+        <a className="secondary-button" href={testHref}>
+          Test {title} Login
+          <ChevronRight size={17} />
+        </a>
+      </div>
+      <label className="field">
+        <span>Client ID</span>
+        <input value={clientId} onChange={(event) => onClientId(event.target.value)} />
+      </label>
+      <label className="field">
+        <span>Client Secret</span>
+        <input
+          type="password"
+          value={clientSecret}
+          onChange={(event) => onClientSecret(event.target.value)}
+          placeholder={clientSecretSet ? "Saved. Leave blank to keep existing secret." : ""}
+        />
+      </label>
+      <label className="field">
+        <span>Redirect URI</span>
+        <input value={redirectUri} onChange={(event) => onRedirectUri(event.target.value)} />
+      </label>
+      <div className={redirectUri === requiredRedirectUri ? "redirect-check ok" : "redirect-check"}>
+        <Check size={15} />
+        <span>{requiredRedirectUri}</span>
+      </div>
+    </section>
   );
 }
 
@@ -441,4 +683,19 @@ function LogList({ transfer }: { transfer: TransferDetail }) {
 
 function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong.";
+}
+
+function emptySettingsForm(): SettingsUpdate {
+  return {
+    spotify: {
+      clientId: "",
+      clientSecret: "",
+      redirectUri: ""
+    },
+    youtube: {
+      clientId: "",
+      clientSecret: "",
+      redirectUri: ""
+    }
+  };
 }

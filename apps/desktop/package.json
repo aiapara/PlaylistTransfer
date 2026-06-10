@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "productName": "Playlist Transfer",
   "private": true,
-  "type": "module",
+  "type": "commonjs",
   "main": "dist/main.js",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "electron dist/main.js",
+    "start": "node scripts/start-electron.cjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
