@@ -41,7 +41,7 @@ export function createApp(options: AppOptions = {}) {
   const desktopMode = options.desktopMode ?? env.DESKTOP_MODE;
   const app = express();
 
-  if (!staleTransfersNormalized) {
+  if (desktopMode && !staleTransfersNormalized) {
     normalizeStaleTransfers();
     staleTransfersNormalized = true;
   }

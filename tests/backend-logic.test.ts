@@ -36,6 +36,7 @@ let matcher: typeof import("../apps/backend/src/services/matcher.js");
 let settings: typeof import("../apps/backend/src/routes/settings.js");
 let transferRoutes: typeof import("../apps/backend/src/routes/transfers.js");
 let transfers: typeof import("../apps/backend/src/services/transfers.js");
+let backendApp: typeof import("../apps/backend/src/app.js");
 let db: Database.Database;
 let express: typeof import("express").default;
 
@@ -44,6 +45,7 @@ before(async () => {
   settings = await import("../apps/backend/src/routes/settings.js");
   transferRoutes = await import("../apps/backend/src/routes/transfers.js");
   transfers = await import("../apps/backend/src/services/transfers.js");
+  backendApp = await import("../apps/backend/src/app.js");
   db = (await import("../apps/backend/src/db/index.js")).db;
   express = (await import("express")).default;
 });
@@ -103,6 +105,20 @@ test("settings config formatting round-trips quoted values and validates redirec
   assert.deepEqual(settings.validateConfig(parsed), []);
 });
 
+test("runtime origin updates OAuth redirect requirements to the selected desktop port", () => {
+  try {
+    backendApp.setDesktopRuntimeOrigin("http://127.0.0.1:49152");
+
+    assert.equal(process.env.PORT, "49152");
+    assert.deepEqual(settings.requiredRedirectUris(), {
+      spotify: "http://127.0.0.1:49152/api/auth/spotify/callback",
+      youtube: "http://127.0.0.1:49152/api/auth/youtube/callback"
+    });
+  } finally {
+    backendApp.setDesktopRuntimeOrigin("http://127.0.0.1:4000");
+  }
+});
+
 test("CSV output escapes quotes and includes failed/review/unmatched states", () => {
   const csv = transferRoutes.unmatchedCsv([
     {
@@ -132,6 +148,14 @@ test("stale matching and running transfers are normalized safely", () => {
 
   assert.equal(statusFor("tr_stale_running"), "paused");
   assert.equal(statusFor("tr_stale_matching"), "failed");
+});
+
+test("web mode app creation does not normalize desktop stale transfers", () => {
+  insertTransfer("tr_web_running", "running");
+
+  backendApp.createApp({ desktopMode: false });
+
+  assert.equal(statusFor("tr_web_running"), "running");
 });
 
 test("per-transfer execution lock rejects duplicate start while a run is active", async () => {

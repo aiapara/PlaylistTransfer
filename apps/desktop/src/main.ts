@@ -4,7 +4,7 @@ import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { app, BrowserWindow, shell } from "electron";
+import { app, BrowserWindow, session, shell } from "electron";
 import type { Event } from "electron";
 import dotenv from "dotenv";
 
@@ -60,6 +60,10 @@ async function start() {
   }
   logger.info(`Desktop backend listening on ${localUrl}`);
 
+  session.defaultSession.setPermissionRequestHandler((_webContents, _permission, callback) => {
+    callback(false);
+  });
+
   await createWindow();
 }
 
@@ -72,7 +76,8 @@ async function createWindow() {
     title: "Playlist Transfer",
     webPreferences: {
       contextIsolation: true,
-      nodeIntegration: false
+      nodeIntegration: false,
+      sandbox: true
     }
   });
 
@@ -190,6 +195,9 @@ function wireNavigationSecurity(window: BrowserWindow): void {
 
   window.webContents.on("will-navigate", guard);
   window.webContents.on("will-redirect", guard);
+  window.webContents.on("will-attach-webview", (event) => {
+    event.preventDefault();
+  });
   window.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternalUrl(url)) {
       void shell.openExternal(url);
