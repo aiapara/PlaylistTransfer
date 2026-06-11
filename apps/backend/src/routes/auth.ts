@@ -27,7 +27,7 @@ authRouter.get("/spotify/callback", async (req, res, next) => {
   try {
     assertState(req, String(req.query.state ?? ""));
     await exchangeSpotifyCode(String(req.query.code ?? ""));
-    res.redirect(callbackRedirectUrl("spotify"));
+    completeCallback(res, "spotify");
   } catch (error) {
     next(error);
   }
@@ -42,7 +42,7 @@ authRouter.get("/youtube/callback", async (req, res, next) => {
   try {
     assertState(req, String(req.query.state ?? ""));
     await exchangeYoutubeCode(String(req.query.code ?? ""));
-    res.redirect(callbackRedirectUrl("youtube"));
+    completeCallback(res, "youtube");
   } catch (error) {
     next(error);
   }
@@ -61,6 +61,27 @@ function assertState(req: Request, actual: string): void {
   req.session.oauthState = undefined;
 }
 
-function callbackRedirectUrl(provider: "spotify" | "youtube"): string {
-  return env.DESKTOP_MODE ? `/?connected=${provider}` : `${env.FRONTEND_URL}/?connected=${provider}`;
+function completeCallback(res: import("express").Response, provider: "spotify" | "youtube"): void {
+  if (!env.DESKTOP_MODE) {
+    res.redirect(`${env.FRONTEND_URL}/?connected=${provider}`);
+    return;
+  }
+
+  res.type("html").send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Playlist Transfer</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'" />
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 40px; color: #151916; }
+      p { color: #526158; }
+    </style>
+  </head>
+  <body>
+    <h1>${provider === "spotify" ? "Spotify" : "YouTube"} connected</h1>
+    <p>You can return to Playlist Transfer.</p>
+    <script>window.close();</script>
+  </body>
+</html>`);
 }

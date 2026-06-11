@@ -27,3 +27,13 @@ const schema = z.object({
 });
 
 export const env = schema.parse(process.env);
+
+export function applyRuntimeEnv(values: Record<string, string | number | boolean | undefined>): void {
+  const parsed = schema.partial().parse(values);
+
+  for (const [key, value] of Object.entries(values)) {
+    if (value !== undefined) process.env[key] = String(value);
+  }
+
+  Object.assign(env, parsed);
+}

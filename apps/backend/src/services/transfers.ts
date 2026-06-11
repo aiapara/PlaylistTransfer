@@ -1,4 +1,12 @@
-import type { CandidateMatch, MatchResult, TrackRef, TransferDetail, TransferLog, TransferSummary } from "@playlist-transfer/shared";
+import type {
+  CandidateMatch,
+  MatchResult,
+  TrackRef,
+  TransferDetail,
+  TransferItemStatus,
+  TransferLog,
+  TransferSummary
+} from "@playlist-transfer/shared";
 import { db } from "../db/index.js";
 import { env } from "../env.js";
 import { randomId } from "../lib/crypto.js";
@@ -31,45 +39,173 @@ type TransferItemRow = {
   selected_title?: string;
   selected_channel?: string;
   score: number;
-  status: MatchResult["status"] | "added" | "failed";
+  status: TransferItemStatus | "added";
   reason?: string;
   attempts: number;
   candidates_json: string;
 };
 
-export async function createTransfer(
-  playlist: { id: string; title: string; description: string; isLikedSongs: boolean },
-  tracks: TrackRef[]
-): Promise<string> {
+type TransferCounts = Record<TransferItemStatus, number>;
+
+export type TransferPlaylistInput = {
+  id: string;
+  title: string;
+  description: string;
+  isLikedSongs: boolean;
+  totalTracks?: number;
+};
+
+export type StartedTransferJob = {
+  transfer: TransferDetail;
+  done: Promise<void>;
+};
+
+const runningTransfers = new Set<string>();
+const matchingTransfers = new Set<string>();
+const itemStatuses: TransferItemStatus[] = ["matched", "review", "unmatched", "skipped", "failed", "transferred"];
+
+export function createTransfer(playlist: TransferPlaylistInput, loadTracks: () => Promise<TrackRef[]>): string {
   const id = randomId("tr");
 
   db.prepare(
     `INSERT INTO transfers (
       id, source_playlist_id, source_kind, playlist_title, playlist_description, status, total_tracks
     ) VALUES (?, ?, ?, ?, ?, 'matching', ?)`
-  ).run(id, playlist.id, playlist.isLikedSongs ? "liked-songs" : "playlist", playlist.title, playlist.description, tracks.length);
+  ).run(
+    id,
+    playlist.id,
+    playlist.isLikedSongs ? "liked-songs" : "playlist",
+    playlist.title,
+    playlist.description,
+    playlist.totalTracks ?? 0
+  );
 
-  logTransfer(id, "info", `Created transfer draft for ${tracks.length} tracks.`);
-
-  for (let i = 0; i < tracks.length; i += 1) {
-    const result = await matchTrack(tracks[i]);
-    saveMatch(id, result);
-    logTransfer(id, result.status === "matched" ? "info" : "warn", `${result.status}: ${tracks[i].title}`);
-  }
-
-  updateTransferStatus(id, "ready");
+  logTransfer(id, "info", `Created transfer and queued matching for ${playlist.totalTracks ?? 0} tracks.`);
+  void beginMatching(id, loadTracks).catch(() => undefined);
   return id;
 }
 
+export function beginMatching(id: string, loadTracks: () => Promise<TrackRef[]>): Promise<void> {
+  if (matchingTransfers.has(id)) {
+    return Promise.reject(httpError(409, "Transfer is already matching."));
+  }
+
+  matchingTransfers.add(id);
+  return matchTransfer(id, loadTracks).finally(() => {
+    matchingTransfers.delete(id);
+  });
+}
+
+export function beginTransferExecution(id: string): StartedTransferJob {
+  if (runningTransfers.has(id)) {
+    throw httpError(409, "Transfer is already running.");
+  }
+
+  const transfer = getTransferRow(id);
+  if (!transfer) throw httpError(404, "Transfer not found.");
+  if (!["ready", "failed", "paused"].includes(transfer.status)) {
+    throw httpError(409, `Transfer cannot start from status ${transfer.status}.`);
+  }
+
+  runningTransfers.add(id);
+  updateTransferStatus(id, "running");
+
+  const done = executeTransfer(id).finally(() => {
+    runningTransfers.delete(id);
+  });
+
+  return {
+    transfer: getTransfer(id)!,
+    done
+  };
+}
+
 export async function runTransfer(id: string): Promise<void> {
-  try {
-    const transfer = getTransferRow(id);
-    if (!transfer) throw new Error("Transfer not found.");
-    if (!["ready", "running", "failed", "paused"].includes(transfer.status)) {
-      throw new Error(`Transfer cannot start from status ${transfer.status}.`);
+  await beginTransferExecution(id).done;
+}
+
+export function normalizeStaleTransfers(): void {
+  const staleRows = db
+    .prepare("SELECT id, status FROM transfers WHERE status IN ('matching', 'running')")
+    .all() as Pick<TransferRow, "id" | "status">[];
+
+  for (const row of staleRows) {
+    if (row.status === "running") {
+      updateTransferStatus(row.id, "paused");
+      logTransfer(row.id, "warn", "Previous app session stopped during transfer; marked paused and safe to resume.");
+      continue;
     }
 
-    updateTransferStatus(id, "running");
+    updateTransferStatus(row.id, "failed");
+    logTransfer(row.id, "error", "Previous app session stopped during matching; create a new preview to retry matching.");
+  }
+}
+
+export function listTransfers(): TransferSummary[] {
+  const rows = db.prepare("SELECT * FROM transfers ORDER BY created_at DESC").all() as TransferRow[];
+  const countsByTransfer = itemCountsForTransfers(rows.map((row) => row.id));
+  return rows.map((row) => toSummary(row, countsByTransfer.get(row.id) ?? emptyCounts()));
+}
+
+export function getTransfer(id: string): TransferDetail | undefined {
+  const row = getTransferRow(id);
+  if (!row) return undefined;
+
+  const itemRows = db.prepare("SELECT * FROM transfer_items WHERE transfer_id = ? ORDER BY rowid").all(id) as TransferItemRow[];
+  const logs = db.prepare("SELECT * FROM transfer_logs WHERE transfer_id = ? ORDER BY created_at ASC").all(id) as {
+    id: string;
+    transfer_id: string;
+    level: TransferLog["level"];
+    message: string;
+    created_at: string;
+  }[];
+
+  return {
+    ...toSummary(row, countsFromRows(itemRows)),
+    playlistDescription: row.playlist_description,
+    matches: itemRows.map(toMatchResult),
+    logs: logs.map((log) => ({
+      id: log.id,
+      transferId: log.transfer_id,
+      level: log.level,
+      message: log.message,
+      createdAt: log.created_at
+    }))
+  };
+}
+
+async function matchTransfer(id: string, loadTracks: () => Promise<TrackRef[]>): Promise<void> {
+  try {
+    const transfer = getTransferRow(id);
+    if (!transfer) throw httpError(404, "Transfer not found.");
+    if (transfer.status !== "matching") {
+      throw httpError(409, `Transfer cannot match from status ${transfer.status}.`);
+    }
+
+    const tracks = await loadTracks();
+    db.prepare("UPDATE transfers SET total_tracks = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(tracks.length, id);
+
+    for (const track of tracks) {
+      const result = await matchTrack(track);
+      saveMatch(id, result);
+      logTransfer(id, result.status === "matched" ? "info" : "warn", `${result.status}: ${track.title}`);
+    }
+
+    updateTransferStatus(id, "ready");
+    logTransfer(id, "info", `Matching completed for ${tracks.length} tracks.`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unexpected matching failure.";
+    updateTransferStatus(id, "failed");
+    logTransfer(id, "error", message);
+    throw error;
+  }
+}
+
+async function executeTransfer(id: string): Promise<void> {
+  try {
+    const transfer = getTransferRow(id);
+    if (!transfer) throw httpError(404, "Transfer not found.");
+
     const destinationPlaylistId =
       transfer.destination_playlist_id ?? (await findOrCreatePlaylist(transfer.playlist_title, transfer.playlist_description));
 
@@ -109,8 +245,8 @@ export async function runTransfer(id: string): Promise<void> {
           incrementAttempts(item.id);
           await retry(() => addVideoToPlaylist(destinationPlaylistId, videoId));
           existingVideos.add(videoId);
-          markItem(item.id, "added");
-          logTransfer(id, "info", `Added: ${item.track_title}`);
+          markItem(item.id, "transferred");
+          logTransfer(id, "info", `Transferred: ${item.track_title}`);
         } catch (error) {
           const message = error instanceof Error ? error.message : "Unknown transfer failure.";
           markItem(item.id, "failed", message);
@@ -123,45 +259,17 @@ export async function runTransfer(id: string): Promise<void> {
 
     const failed = countItems(id, "failed");
     updateTransferStatus(id, failed > 0 ? "failed" : "completed");
-    logTransfer(id, failed > 0 ? "error" : "info", failed > 0 ? `Transfer finished with ${failed} failures.` : "Transfer completed.");
+    logTransfer(
+      id,
+      failed > 0 ? "error" : "info",
+      failed > 0 ? `Transfer finished with ${failed} failures.` : "Transfer completed."
+    );
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unexpected transfer failure.";
     updateTransferStatus(id, "failed");
     logTransfer(id, "error", message);
     throw error;
   }
-}
-
-export function listTransfers(): TransferSummary[] {
-  const rows = db.prepare("SELECT * FROM transfers ORDER BY created_at DESC").all() as TransferRow[];
-  return rows.map(toSummary);
-}
-
-export function getTransfer(id: string): TransferDetail | undefined {
-  const row = getTransferRow(id);
-  if (!row) return undefined;
-
-  const itemRows = db.prepare("SELECT * FROM transfer_items WHERE transfer_id = ? ORDER BY rowid").all(id) as TransferItemRow[];
-  const logs = db.prepare("SELECT * FROM transfer_logs WHERE transfer_id = ? ORDER BY created_at ASC").all(id) as {
-    id: string;
-    transfer_id: string;
-    level: TransferLog["level"];
-    message: string;
-    created_at: string;
-  }[];
-
-  return {
-    ...toSummary(row),
-    playlistDescription: row.playlist_description,
-    matches: itemRows.map(toMatchResult),
-    logs: logs.map((log) => ({
-      id: log.id,
-      transferId: log.transfer_id,
-      level: log.level,
-      message: log.message,
-      createdAt: log.created_at
-    }))
-  };
 }
 
 function saveMatch(transferId: string, result: MatchResult): void {
@@ -211,7 +319,7 @@ function updateTransferStatus(id: string, status: TransferSummary["status"]): vo
   db.prepare("UPDATE transfers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
 }
 
-function markItem(id: string, status: TransferItemRow["status"], reason?: string): void {
+function markItem(id: string, status: TransferItemStatus, reason?: string): void {
   db.prepare("UPDATE transfer_items SET status = ?, reason = COALESCE(?, reason), added_at = CURRENT_TIMESTAMP WHERE id = ?").run(
     status,
     reason ?? null,
@@ -223,9 +331,44 @@ function incrementAttempts(id: string): void {
   db.prepare("UPDATE transfer_items SET attempts = attempts + 1 WHERE id = ?").run(id);
 }
 
-function countItems(transferId: string, status: string): number {
+function countItems(transferId: string, status: TransferItemStatus): number {
   return (db.prepare("SELECT COUNT(*) AS count FROM transfer_items WHERE transfer_id = ? AND status = ?").get(transferId, status) as { count: number })
     .count;
+}
+
+function itemCountsForTransfers(ids: string[]): Map<string, TransferCounts> {
+  const counts = new Map<string, TransferCounts>();
+  if (ids.length === 0) return counts;
+
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT transfer_id, status, COUNT(*) AS count
+       FROM transfer_items
+       WHERE transfer_id IN (${placeholders})
+       GROUP BY transfer_id, status`
+    )
+    .all(...ids) as { transfer_id: string; status: TransferItemRow["status"]; count: number }[];
+
+  for (const row of rows) {
+    const current = counts.get(row.transfer_id) ?? emptyCounts();
+    current[normalizeItemStatus(row.status)] += row.count;
+    counts.set(row.transfer_id, current);
+  }
+
+  return counts;
+}
+
+function countsFromRows(rows: TransferItemRow[]): TransferCounts {
+  const counts = emptyCounts();
+  for (const row of rows) {
+    counts[normalizeItemStatus(row.status)] += 1;
+  }
+  return counts;
+}
+
+function emptyCounts(): TransferCounts {
+  return Object.fromEntries(itemStatuses.map((status) => [status, 0])) as TransferCounts;
 }
 
 function logTransfer(transferId: string, level: TransferLog["level"], message: string): void {
@@ -237,19 +380,26 @@ function logTransfer(transferId: string, level: TransferLog["level"], message: s
   );
 }
 
-function toSummary(row: TransferRow): TransferSummary {
+function toSummary(row: TransferRow, counts: TransferCounts): TransferSummary {
+  const matchingCompleted = itemStatuses.reduce((total, status) => total + counts[status], 0);
+  const transferred = counts.transferred;
+  const transferable = counts.matched + counts.failed + counts.skipped + counts.transferred;
+
   return {
     id: row.id,
     playlistTitle: row.playlist_title,
     status: row.status,
     destinationPlaylistId: row.destination_playlist_id,
     totalTracks: row.total_tracks,
-    matched: countItems(row.id, "matched") + countItems(row.id, "added"),
-    review: countItems(row.id, "review"),
-    unmatched: countItems(row.id, "unmatched"),
-    skipped: countItems(row.id, "skipped"),
-    added: countItems(row.id, "added"),
-    failed: countItems(row.id, "failed"),
+    matchingCompleted,
+    transferable,
+    matched: counts.matched,
+    review: counts.review,
+    unmatched: counts.unmatched,
+    skipped: counts.skipped,
+    transferred,
+    added: transferred,
+    failed: counts.failed,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
@@ -275,7 +425,17 @@ function toMatchResult(row: TransferItemRow): MatchResult {
         }
       : undefined,
     candidates,
-    status: row.status === "added" ? "matched" : row.status === "failed" ? "matched" : row.status,
+    status: normalizeItemStatus(row.status),
     reason: row.reason
   };
+}
+
+function normalizeItemStatus(status: TransferItemRow["status"]): TransferItemStatus {
+  return status === "added" ? "transferred" : status;
+}
+
+function httpError(status: number, message: string): Error & { status: number } {
+  const error = new Error(message) as Error & { status: number };
+  error.status = status;
+  return error;
 }

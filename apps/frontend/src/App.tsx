@@ -1,4 +1,4 @@
-import type { AuthStatus, MatchResult, SourcePlaylist, TransferDetail, TransferSummary } from "@playlist-transfer/shared";
+import { calculateTransferProgress, type AuthStatus, type MatchResult, type SourcePlaylist, type TransferDetail, type TransferSummary } from "@playlist-transfer/shared";
 import {
   AlertCircle,
   Check,
@@ -56,6 +56,11 @@ export function App() {
 
   useEffect(() => {
     void refresh();
+    const refreshOnFocus = () => {
+      void refresh();
+    };
+    window.addEventListener("focus", refreshOnFocus);
+    return () => window.removeEventListener("focus", refreshOnFocus);
   }, []);
 
   useEffect(() => {
@@ -88,7 +93,7 @@ export function App() {
 
   const selectedPlaylist = playlists.find((playlist) => playlist.id === selectedPlaylistId);
   const visiblePlaylists = playlists.filter((playlist) => playlist.title.toLowerCase().includes(filter.toLowerCase()));
-  const progress = transfer ? Math.round(((transfer.added + transfer.skipped + transfer.failed) / Math.max(transfer.matched, 1)) * 100) : 0;
+  const progress = transfer ? calculateTransferProgress(transfer) : undefined;
 
   async function refresh() {
     setError("");
@@ -571,7 +576,7 @@ function TransferView({
   onBack
 }: {
   transfer: TransferDetail;
-  progress: number;
+  progress: ReturnType<typeof calculateTransferProgress> | undefined;
   busy: boolean;
   onStart: () => void;
   onBack: () => void;
@@ -581,10 +586,14 @@ function TransferView({
       matched: transfer.matches.filter((item) => item.status === "matched" && item.selected?.confidence === "high"),
       review: transfer.matches.filter((item) => item.status === "review"),
       unmatched: transfer.matches.filter((item) => item.status === "unmatched"),
-      skipped: transfer.matches.filter((item) => item.status === "skipped")
+      failed: transfer.matches.filter((item) => item.status === "failed"),
+      skipped: transfer.matches.filter((item) => item.status === "skipped"),
+      transferred: transfer.matches.filter((item) => item.status === "transferred")
     }),
     [transfer.matches]
   );
+  const canStart = ["ready", "failed", "paused"].includes(transfer.status);
+  const progressView = progress ?? calculateTransferProgress(transfer);
 
   return (
     <>
@@ -599,7 +608,7 @@ function TransferView({
             <Download size={17} />
             CSV
           </a>
-          <button className="primary-button" onClick={onStart} disabled={busy || !["ready", "failed", "paused"].includes(transfer.status)}>
+          <button className="primary-button" onClick={onStart} disabled={busy || !canStart}>
             <Play size={17} />
             {transfer.status === "failed" ? "Resume" : "Transfer"}
           </button>
@@ -610,23 +619,29 @@ function TransferView({
         <Metric label="Matched" value={transfer.matched} />
         <Metric label="Review" value={transfer.review} />
         <Metric label="Unmatched" value={transfer.unmatched} />
-        <Metric label="Added" value={transfer.added} />
+        <Metric label="Transferred" value={transfer.transferred} />
         <Metric label="Failed" value={transfer.failed} />
       </div>
 
       <div className="progress-wrap">
         <div className="progress-label">
-          <span>Transfer progress</span>
-          <strong>{progress}%</strong>
+          <span>{progressView.phase === "matching" ? "Matching progress" : "Transfer progress"}</span>
+          <strong>{progressView.percent}%</strong>
         </div>
         <div className="progress-bar">
-          <span style={{ width: `${progress}%` }} />
+          <span style={{ width: `${progressView.percent}%` }} />
         </div>
+        <p className="progress-detail">
+          {progressView.completed.toLocaleString()} of {progressView.total.toLocaleString()} {progressView.phase === "matching" ? "tracks matched" : "items handled"}
+        </p>
       </div>
 
       <MatchTable title="Matched" items={groups.matched} />
       <MatchTable title="Manual Review" items={groups.review} />
       <MatchTable title="Unmatched" items={groups.unmatched} />
+      <MatchTable title="Failed" items={groups.failed} />
+      <MatchTable title="Skipped" items={groups.skipped} />
+      <MatchTable title="Transferred" items={groups.transferred} />
       <LogList transfer={transfer} />
     </>
   );

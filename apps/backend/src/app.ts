@@ -7,12 +7,13 @@ import path from "node:path";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { ZodError } from "zod";
-import { env } from "./env.js";
+import { applyRuntimeEnv, env } from "./env.js";
 import "./db/index.js";
 import { authRouter } from "./routes/auth.js";
 import { playlistsRouter } from "./routes/playlists.js";
 import { createSettingsRouter } from "./routes/settings.js";
 import { transfersRouter } from "./routes/transfers.js";
+import { normalizeStaleTransfers } from "./services/transfers.js";
 
 export const logger = pino({ level: env.NODE_ENV === "production" ? "info" : "debug" });
 
@@ -24,11 +25,48 @@ export type AppOptions = {
   openConfigFolder?: () => Promise<void> | void;
 };
 
+let staleTransfersNormalized = false;
+
+export function setDesktopRuntimeOrigin(origin: string): void {
+  const url = new URL(origin);
+  applyRuntimeEnv({
+    PORT: Number(url.port),
+    FRONTEND_URL: url.origin,
+    SPOTIFY_REDIRECT_URI: `${url.origin}/api/auth/spotify/callback`,
+    GOOGLE_REDIRECT_URI: `${url.origin}/api/auth/youtube/callback`
+  });
+}
+
 export function createApp(options: AppOptions = {}) {
   const desktopMode = options.desktopMode ?? env.DESKTOP_MODE;
   const app = express();
 
-  app.use(helmet({ contentSecurityPolicy: desktopMode ? false : undefined }));
+  if (!staleTransfersNormalized) {
+    normalizeStaleTransfers();
+    staleTransfersNormalized = true;
+  }
+
+  app.use(
+    helmet({
+      contentSecurityPolicy: desktopMode
+        ? {
+            useDefaults: true,
+            directives: {
+              "default-src": ["'self'"],
+              "script-src": ["'self'"],
+              // The renderer uses a small inline width style for the progress bar.
+              "style-src": ["'self'", "'unsafe-inline'"],
+              "img-src": ["'self'", "data:", "https:"],
+              "connect-src": ["'self'"],
+              "form-action": ["'self'"],
+              "frame-ancestors": ["'none'"],
+              "base-uri": ["'self'"],
+              "upgrade-insecure-requests": null
+            }
+          }
+        : undefined
+    })
+  );
   if (!desktopMode) {
     app.use(
       cors({

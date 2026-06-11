@@ -101,4 +101,9 @@ Implemented as a conversion:
 - Settings validation added for required client IDs, client secrets, exact local redirect URIs, and the 32-byte base64 encryption key.
 - One-click config folder opening added through Electron.
 - Test Spotify login and Test YouTube login actions added from the setup screen.
-- Playlist transfer logic remains untouched.
+- The desktop backend now prefers port `4000` but safely falls back to an available loopback port and updates runtime OAuth redirect requirements.
+- Electron blocks unexpected main-window navigation and starts OAuth in the system browser.
+- Desktop mode uses a constrained Content Security Policy instead of disabling CSP.
+- Transfer preview creates a transfer quickly and performs matching in the background.
+- Transfer execution uses per-transfer locks, stale startup states are normalized, and item states preserve `transferred`, `failed`, and `skipped`.
+- SQLite schema setup now runs through ordered migrations recorded in `schema_migrations`.

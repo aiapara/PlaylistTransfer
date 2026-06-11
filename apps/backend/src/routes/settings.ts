@@ -1,11 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
+import dotenv from "dotenv";
 import { Router } from "express";
 import { z } from "zod";
-import { env } from "../env.js";
-
-const REQUIRED_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:4000/api/auth/spotify/callback";
-const REQUIRED_GOOGLE_REDIRECT_URI = "http://127.0.0.1:4000/api/auth/youtube/callback";
+import { applyRuntimeEnv, env } from "../env.js";
 
 type SettingsRouterOptions = {
   desktopMode: boolean;
@@ -63,9 +61,11 @@ export function createSettingsRouter(options: SettingsRouterOptions): Router {
       return res.status(404).json({ error: "Desktop settings are only available in the Electron app." });
     }
 
+    const required = requiredRedirectUris();
     const input = updateSchema.parse(req.body);
     const current = readRawConfig(options.configPath);
     const next = {
+      FRONTEND_URL: env.FRONTEND_URL,
       SPOTIFY_CLIENT_ID: input.spotify.clientId,
       SPOTIFY_CLIENT_SECRET: input.spotify.clientSecret || current.SPOTIFY_CLIENT_SECRET || "",
       SPOTIFY_REDIRECT_URI: input.spotify.redirectUri,
@@ -75,7 +75,7 @@ export function createSettingsRouter(options: SettingsRouterOptions): Router {
     };
 
     const candidate = { ...current, ...next };
-    const errors = validateConfig(candidate);
+    const errors = validateConfig(candidate, required);
     if (errors.length > 0) {
       return res.status(400).json({ error: "Settings are incomplete.", details: errors });
     }
@@ -104,16 +104,14 @@ export function createSettingsRouter(options: SettingsRouterOptions): Router {
 
 function readSettings(options: SettingsRouterOptions): DesktopSettings {
   const raw = options.configPath ? readRawConfig(options.configPath) : process.env;
-  const errors = validateConfig(raw);
+  const required = requiredRedirectUris();
+  const errors = validateConfig(raw, required);
 
   return {
     desktopMode: options.desktopMode,
     configDir: options.configDir,
     configPath: options.configPath,
-    requiredRedirectUris: {
-      spotify: REQUIRED_SPOTIFY_REDIRECT_URI,
-      youtube: REQUIRED_GOOGLE_REDIRECT_URI
-    },
+    requiredRedirectUris: required,
     spotify: {
       clientId: raw.SPOTIFY_CLIENT_ID ?? "",
       clientSecretSet: Boolean(raw.SPOTIFY_CLIENT_SECRET),
@@ -131,7 +129,18 @@ function readSettings(options: SettingsRouterOptions): DesktopSettings {
   };
 }
 
-function validateConfig(config: NodeJS.ProcessEnv): string[] {
+export function requiredRedirectUris(origin = env.FRONTEND_URL): { spotify: string; youtube: string } {
+  const base = new URL(origin).origin;
+  return {
+    spotify: `${base}/api/auth/spotify/callback`,
+    youtube: `${base}/api/auth/youtube/callback`
+  };
+}
+
+export function validateConfig(
+  config: NodeJS.ProcessEnv,
+  required: { spotify: string; youtube: string } = requiredRedirectUris()
+): string[] {
   const errors: string[] = [];
 
   if (!config.SESSION_SECRET || config.SESSION_SECRET.length < 24) {
@@ -144,17 +153,97 @@ function validateConfig(config: NodeJS.ProcessEnv): string[] {
 
   if (!config.SPOTIFY_CLIENT_ID) errors.push("SPOTIFY_CLIENT_ID is missing.");
   if (!config.SPOTIFY_CLIENT_SECRET) errors.push("SPOTIFY_CLIENT_SECRET is missing.");
-  if (config.SPOTIFY_REDIRECT_URI !== REQUIRED_SPOTIFY_REDIRECT_URI) {
-    errors.push(`SPOTIFY_REDIRECT_URI must be ${REQUIRED_SPOTIFY_REDIRECT_URI}.`);
+  if (config.SPOTIFY_REDIRECT_URI !== required.spotify) {
+    errors.push(`SPOTIFY_REDIRECT_URI must be ${required.spotify}.`);
   }
 
   if (!config.GOOGLE_CLIENT_ID) errors.push("GOOGLE_CLIENT_ID is missing.");
   if (!config.GOOGLE_CLIENT_SECRET) errors.push("GOOGLE_CLIENT_SECRET is missing.");
-  if (config.GOOGLE_REDIRECT_URI !== REQUIRED_GOOGLE_REDIRECT_URI) {
-    errors.push(`GOOGLE_REDIRECT_URI must be ${REQUIRED_GOOGLE_REDIRECT_URI}.`);
+  if (config.GOOGLE_REDIRECT_URI !== required.youtube) {
+    errors.push(`GOOGLE_REDIRECT_URI must be ${required.youtube}.`);
   }
 
   return errors;
+}
+
+export function readRawConfig(configPath: string): NodeJS.ProcessEnv {
+  if (!fs.existsSync(configPath)) return {};
+  return parseConfigText(fs.readFileSync(configPath, "utf8"));
+}
+
+export function parseConfigText(text: string): NodeJS.ProcessEnv {
+  const parsed = dotenv.parse(text);
+
+  for (const line of text.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const separator = trimmed.indexOf("=");
+    if (separator < 0) continue;
+
+    const key = trimmed.slice(0, separator);
+    const rawValue = trimmed.slice(separator + 1).trim();
+    if (!rawValue.startsWith('"')) continue;
+
+    try {
+      parsed[key] = JSON.parse(rawValue) as string;
+    } catch {
+      // Keep dotenv's legacy parsing for hand-edited values that are not JSON strings.
+    }
+  }
+
+  return parsed;
+}
+
+export function writeConfig(configPath: string, values: NodeJS.ProcessEnv): void {
+  fs.mkdirSync(path.dirname(configPath), { recursive: true });
+  const config = formatConfig(values);
+  fs.writeFileSync(configPath, config, { encoding: "utf8", mode: 0o600 });
+  secureConfigFile(configPath);
+}
+
+export function formatConfig(values: NodeJS.ProcessEnv): string {
+  const required = requiredRedirectUris();
+  const lines = [
+    ["NODE_ENV", values.NODE_ENV ?? "development"],
+    ["PORT", "4000"],
+    ["DESKTOP_MODE", "true"],
+    ["FRONTEND_URL", values.FRONTEND_URL ?? env.FRONTEND_URL],
+    ["SESSION_SECRET", values.SESSION_SECRET ?? ""],
+    ["TOKEN_ENCRYPTION_KEY", values.TOKEN_ENCRYPTION_KEY ?? ""],
+    ["DATABASE_PATH", values.DATABASE_PATH ?? ""],
+    "",
+    "# Spotify app settings",
+    ["SPOTIFY_CLIENT_ID", values.SPOTIFY_CLIENT_ID ?? ""],
+    ["SPOTIFY_CLIENT_SECRET", values.SPOTIFY_CLIENT_SECRET ?? ""],
+    ["SPOTIFY_REDIRECT_URI", values.SPOTIFY_REDIRECT_URI ?? required.spotify],
+    "",
+    "# Google OAuth client for YouTube Data API v3",
+    ["GOOGLE_CLIENT_ID", values.GOOGLE_CLIENT_ID ?? ""],
+    ["GOOGLE_CLIENT_SECRET", values.GOOGLE_CLIENT_SECRET ?? ""],
+    ["GOOGLE_REDIRECT_URI", values.GOOGLE_REDIRECT_URI ?? required.youtube],
+    "",
+    "# Transfer tuning",
+    ["MATCH_CONFIDENCE_THRESHOLD", values.MATCH_CONFIDENCE_THRESHOLD ?? String(env.MATCH_CONFIDENCE_THRESHOLD)],
+    ["TRANSFER_BATCH_SIZE", values.TRANSFER_BATCH_SIZE ?? String(env.TRANSFER_BATCH_SIZE)],
+    ["TRANSFER_BATCH_DELAY_MS", values.TRANSFER_BATCH_DELAY_MS ?? String(env.TRANSFER_BATCH_DELAY_MS)],
+    ["MAX_RETRY_ATTEMPTS", values.MAX_RETRY_ATTEMPTS ?? String(env.MAX_RETRY_ATTEMPTS)],
+    ""
+  ];
+
+  return lines.map((line) => (Array.isArray(line) ? `${line[0]}=${formatEnvValue(line[1])}` : line)).join("\n");
+}
+
+export function formatEnvValue(value: string): string {
+  if (value === "") return "";
+  return JSON.stringify(value);
+}
+
+export function secureConfigFile(configPath: string): void {
+  try {
+    fs.chmodSync(configPath, 0o600);
+  } catch {
+    // chmod is best-effort on Windows, but POSIX-like installs get owner-only permissions.
+  }
 }
 
 function isValidEncryptionKey(value: string | undefined): boolean {
@@ -166,66 +255,6 @@ function isValidEncryptionKey(value: string | undefined): boolean {
   }
 }
 
-function readRawConfig(configPath: string): NodeJS.ProcessEnv {
-  if (!fs.existsSync(configPath)) return {};
-
-  const config: NodeJS.ProcessEnv = {};
-  const lines = fs.readFileSync(configPath, "utf8").split(/\r?\n/);
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const separator = trimmed.indexOf("=");
-    if (separator < 0) continue;
-    const key = trimmed.slice(0, separator);
-    const value = trimmed.slice(separator + 1);
-    config[key] = value;
-  }
-
-  return config;
-}
-
-function writeConfig(configPath: string, values: NodeJS.ProcessEnv): void {
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  const config = [
-    `NODE_ENV=${values.NODE_ENV ?? "development"}`,
-    `PORT=${values.PORT ?? "4000"}`,
-    "DESKTOP_MODE=true",
-    `FRONTEND_URL=${values.FRONTEND_URL ?? "http://127.0.0.1:4000"}`,
-    `SESSION_SECRET=${values.SESSION_SECRET ?? ""}`,
-    `TOKEN_ENCRYPTION_KEY=${values.TOKEN_ENCRYPTION_KEY ?? ""}`,
-    `DATABASE_PATH=${values.DATABASE_PATH ?? ""}`,
-    "",
-    "# Spotify app settings",
-    `SPOTIFY_CLIENT_ID=${values.SPOTIFY_CLIENT_ID ?? ""}`,
-    `SPOTIFY_CLIENT_SECRET=${values.SPOTIFY_CLIENT_SECRET ?? ""}`,
-    `SPOTIFY_REDIRECT_URI=${values.SPOTIFY_REDIRECT_URI ?? REQUIRED_SPOTIFY_REDIRECT_URI}`,
-    "",
-    "# Google OAuth client for YouTube Data API v3",
-    `GOOGLE_CLIENT_ID=${values.GOOGLE_CLIENT_ID ?? ""}`,
-    `GOOGLE_CLIENT_SECRET=${values.GOOGLE_CLIENT_SECRET ?? ""}`,
-    `GOOGLE_REDIRECT_URI=${values.GOOGLE_REDIRECT_URI ?? REQUIRED_GOOGLE_REDIRECT_URI}`,
-    "",
-    "# Transfer tuning",
-    `MATCH_CONFIDENCE_THRESHOLD=${values.MATCH_CONFIDENCE_THRESHOLD ?? String(env.MATCH_CONFIDENCE_THRESHOLD)}`,
-    `TRANSFER_BATCH_SIZE=${values.TRANSFER_BATCH_SIZE ?? String(env.TRANSFER_BATCH_SIZE)}`,
-    `TRANSFER_BATCH_DELAY_MS=${values.TRANSFER_BATCH_DELAY_MS ?? String(env.TRANSFER_BATCH_DELAY_MS)}`,
-    `MAX_RETRY_ATTEMPTS=${values.MAX_RETRY_ATTEMPTS ?? String(env.MAX_RETRY_ATTEMPTS)}`,
-    ""
-  ].join("\n");
-
-  fs.writeFileSync(configPath, config, "utf8");
-}
-
 function applyRuntimeConfig(values: NodeJS.ProcessEnv): void {
-  for (const [key, value] of Object.entries(values)) {
-    if (value !== undefined) process.env[key] = value;
-  }
-
-  env.SPOTIFY_CLIENT_ID = values.SPOTIFY_CLIENT_ID ?? env.SPOTIFY_CLIENT_ID;
-  env.SPOTIFY_CLIENT_SECRET = values.SPOTIFY_CLIENT_SECRET ?? env.SPOTIFY_CLIENT_SECRET;
-  env.SPOTIFY_REDIRECT_URI = values.SPOTIFY_REDIRECT_URI ?? env.SPOTIFY_REDIRECT_URI;
-  env.GOOGLE_CLIENT_ID = values.GOOGLE_CLIENT_ID ?? env.GOOGLE_CLIENT_ID;
-  env.GOOGLE_CLIENT_SECRET = values.GOOGLE_CLIENT_SECRET ?? env.GOOGLE_CLIENT_SECRET;
-  env.GOOGLE_REDIRECT_URI = values.GOOGLE_REDIRECT_URI ?? env.GOOGLE_REDIRECT_URI;
+  applyRuntimeEnv(values);
 }

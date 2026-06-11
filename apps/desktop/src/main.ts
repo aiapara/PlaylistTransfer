@@ -1,12 +1,15 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { app, BrowserWindow, shell } from "electron";
+import type { Event } from "electron";
 import dotenv from "dotenv";
 
 let mainWindow: BrowserWindow | undefined;
-let server: { close: () => void } | undefined;
+let server: Server | undefined;
 let localUrl = "";
 
 type BackendModule = {
@@ -17,10 +20,12 @@ type BackendModule = {
     configPath: string;
     openConfigFolder: () => Promise<void>;
   }) => {
-    listen: (port: number, hostname: string, callback: () => void) => { close: () => void };
+    listen: (port: number, hostname: string) => Server;
   };
+  setDesktopRuntimeOrigin: (origin: string) => void;
   logger: {
     info: (message: string) => void;
+    warn?: (message: string) => void;
   };
 };
 
@@ -29,10 +34,11 @@ app.setName("Playlist Transfer");
 async function start() {
   const userDataPath = app.getPath("userData");
   const configPath = configureLocalEnvironment(userDataPath);
+  const preferredPort = 4000;
 
   const backendUrl = pathToFileURL(path.resolve(__dirname, "../../backend/dist/app.js")).href;
   const importModule = new Function("specifier", "return import(specifier)") as <T>(specifier: string) => Promise<T>;
-  const { createApp, logger } = await importModule<BackendModule>(backendUrl);
+  const { createApp, logger, setDesktopRuntimeOrigin } = await importModule<BackendModule>(backendUrl);
   const expressApp = createApp({
     desktopMode: true,
     staticDir: path.resolve(__dirname, "../../frontend/dist"),
@@ -44,11 +50,15 @@ async function start() {
     }
   });
 
-  const port = Number(process.env.PORT ?? 4000);
-  localUrl = `http://127.0.0.1:${port}`;
-  server = expressApp.listen(port, "127.0.0.1", () => {
-    logger.info(`Desktop backend listening on ${localUrl}`);
-  });
+  const listening = await listenWithFallback(expressApp, preferredPort);
+  server = listening.server;
+  localUrl = `http://127.0.0.1:${listening.port}`;
+  setDesktopRuntimeOrigin(localUrl);
+
+  if (listening.port !== preferredPort) {
+    logger.warn?.(`Preferred port ${preferredPort} was unavailable; using ${localUrl}.`);
+  }
+  logger.info(`Desktop backend listening on ${localUrl}`);
 
   await createWindow();
 }
@@ -65,6 +75,8 @@ async function createWindow() {
       nodeIntegration: false
     }
   });
+
+  wireNavigationSecurity(mainWindow);
 
   mainWindow.on("closed", () => {
     mainWindow = undefined;
@@ -85,7 +97,7 @@ function configureLocalEnvironment(userDataPath: string): string {
 
   process.env.DESKTOP_MODE = "true";
   process.env.NODE_ENV = process.env.NODE_ENV ?? "development";
-  process.env.PORT = process.env.PORT ?? "4000";
+  process.env.PORT = "4000";
   process.env.FRONTEND_URL = process.env.FRONTEND_URL ?? `http://127.0.0.1:${process.env.PORT}`;
   process.env.SPOTIFY_REDIRECT_URI =
     process.env.SPOTIFY_REDIRECT_URI ?? `http://127.0.0.1:${process.env.PORT}/api/auth/spotify/callback`;
@@ -95,11 +107,15 @@ function configureLocalEnvironment(userDataPath: string): string {
   process.env.DESKTOP_CONFIG_DIR = userDataPath;
   process.env.DESKTOP_CONFIG_PATH = configPath;
 
+  secureConfigFile(configPath);
   return configPath;
 }
 
 function ensureConfigFile(configPath: string, userDataPath: string): void {
-  if (fs.existsSync(configPath)) return;
+  if (fs.existsSync(configPath)) {
+    secureConfigFile(configPath);
+    return;
+  }
 
   const defaultConfig = [
     "NODE_ENV=development",
@@ -128,7 +144,94 @@ function ensureConfigFile(configPath: string, userDataPath: string): void {
     ""
   ].join("\n");
 
-  fs.writeFileSync(configPath, defaultConfig, "utf8");
+  fs.writeFileSync(configPath, defaultConfig, { encoding: "utf8", mode: 0o600 });
+  secureConfigFile(configPath);
+}
+
+function listenWithFallback(
+  expressApp: { listen: (port: number, hostname: string) => Server },
+  preferredPort: number
+): Promise<{ server: Server; port: number }> {
+  return listenOn(expressApp, preferredPort).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== "EADDRINUSE") throw error;
+    return listenOn(expressApp, 0);
+  });
+}
+
+function listenOn(
+  expressApp: { listen: (port: number, hostname: string) => Server },
+  port: number
+): Promise<{ server: Server; port: number }> {
+  return new Promise((resolve, reject) => {
+    const candidate = expressApp.listen(port, "127.0.0.1");
+    candidate.once("error", (error) => {
+      candidate.close();
+      reject(error);
+    });
+    candidate.once("listening", () => {
+      const address = candidate.address() as AddressInfo;
+      resolve({ server: candidate, port: address.port });
+    });
+  });
+}
+
+function wireNavigationSecurity(window: BrowserWindow): void {
+  const guard = (event: Event, targetUrl: string) => {
+    if (isOAuthStartUrl(targetUrl)) {
+      event.preventDefault();
+      void shell.openExternal(targetUrl);
+      return;
+    }
+
+    if (!isAllowedAppUrl(targetUrl)) {
+      event.preventDefault();
+    }
+  };
+
+  window.webContents.on("will-navigate", guard);
+  window.webContents.on("will-redirect", guard);
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedExternalUrl(url)) {
+      void shell.openExternal(url);
+    }
+
+    return { action: "deny" };
+  });
+}
+
+function isOAuthStartUrl(targetUrl: string): boolean {
+  try {
+    const url = new URL(targetUrl);
+    return url.origin === localUrl && /^\/api\/auth\/(?:spotify|youtube)\/login$/.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedAppUrl(targetUrl: string): boolean {
+  try {
+    const url = new URL(targetUrl);
+    return url.origin === localUrl;
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedExternalUrl(targetUrl: string): boolean {
+  try {
+    const url = new URL(targetUrl);
+    return ["https://accounts.spotify.com", "https://accounts.google.com"].includes(url.origin);
+  } catch {
+    return false;
+  }
+}
+
+function secureConfigFile(configPath: string): void {
+  try {
+    fs.chmodSync(configPath, 0o600);
+  } catch {
+    // chmod is best-effort on Windows, but POSIX-like installs get owner-only permissions.
+  }
 }
 
 function toEnvPath(value: string): string {

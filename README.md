@@ -50,7 +50,7 @@ Sources:
 4. Configure Spotify:
 
    - Create an app at https://developer.spotify.com/dashboard
-   - Add this exact redirect URI: `http://127.0.0.1:4000/api/auth/spotify/callback`
+   - Add the exact Spotify redirect URI shown in the Desktop Setup screen. The app prefers `http://127.0.0.1:4000/api/auth/spotify/callback`, but it can choose another local port if `4000` is already in use.
    - Copy the Spotify Client ID and Client Secret into the app settings screen.
    - Scopes used by the app: `playlist-read-private`, `playlist-read-collaborative`, `user-library-read`, `playlist-modify-private`
 
@@ -58,7 +58,7 @@ Sources:
 
    - Create an OAuth client in Google Cloud Console.
    - Enable YouTube Data API v3.
-   - Add this exact redirect URI: `http://127.0.0.1:4000/api/auth/youtube/callback`
+   - Add the exact YouTube redirect URI shown in the Desktop Setup screen. The app prefers `http://127.0.0.1:4000/api/auth/youtube/callback`, with the same local-port fallback behavior.
    - Copy the Google Client ID and Client Secret into the app settings screen.
    - OAuth scope used by the app: `https://www.googleapis.com/auth/youtube.force-ssl`
 
@@ -104,7 +104,7 @@ The web development app is still available for local development.
 
 ## Desktop App
 
-This repo now favors a local Electron desktop app over hosted deployment. The desktop app starts the existing Node backend on `127.0.0.1:4000`, serves the built React frontend from that local backend, stores OAuth tokens in a local SQLite database, and stores desktop configuration in Electron's user-data directory.
+This repo now favors a local Electron desktop app over hosted deployment. The desktop app starts the existing Node backend on loopback, serves the built React frontend from that local backend, stores OAuth tokens in a local SQLite database, and stores desktop configuration in Electron's user-data directory.
 
 Run it with:
 
@@ -112,19 +112,34 @@ Run it with:
 npm run desktop
 ```
 
-On first launch, the app creates a local `playlist-transfer.env` file in Electron's user-data directory and opens the in-app setup screen. Save Spotify and Google OAuth credentials there, using these redirect URIs:
+On first launch, the app creates a local `playlist-transfer.env` file in Electron's user-data directory and opens the in-app setup screen. The app tries `127.0.0.1:4000` first. If that port is occupied, it binds a safe dynamic loopback port and updates the required OAuth redirect URIs for the current run.
 
-- `http://127.0.0.1:4000/api/auth/spotify/callback`
-- `http://127.0.0.1:4000/api/auth/youtube/callback`
+Use the exact redirect URIs displayed in the setup screen when configuring Spotify and Google. If the fallback port changes later, the setup screen will show the new required values.
 
-The generated local config includes stable `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_PATH` values. Keep those values if you want previously stored tokens to remain readable.
+The generated local config includes stable `SESSION_SECRET`, `TOKEN_ENCRYPTION_KEY`, and `DATABASE_PATH` values. Keep those values if you want previously stored tokens to remain readable. The app writes and rewrites this file with owner-only permissions where the operating system supports them.
+
+Desktop OAuth starts in the system browser instead of navigating the main Electron window away from the app. After the provider callback succeeds, return to Playlist Transfer; the app refreshes connection status when the window regains focus.
 
 ## Architecture Notes
 
 - The React frontend is reused as-is and continues to call same-origin `/api/*` routes.
 - The Node backend is reused inside Electron and still owns OAuth callbacks, playlist reads, matching, transfer execution, and CSV export.
 - The SQLite token and transfer store remains local-only.
+- SQLite schema changes are applied through ordered startup migrations recorded in `schema_migrations`.
 - Hosted-server deployment, remote secret managers, and multi-user infrastructure are no longer part of the recommended path.
+
+## Development Checks
+
+Run the main validation commands from the repository root:
+
+```bash
+npm run typecheck
+npm run build
+npm run lint
+npm test
+```
+
+`npm run lint` uses ESLint 9 flat config. `npm test` uses Node's test runner through `tsx` and mocks service boundaries instead of calling Spotify or YouTube.
 
 ## MVP Limitations
 
@@ -139,4 +154,4 @@ The generated local config includes stable `SESSION_SECRET`, `TOKEN_ENCRYPTION_K
 - True sync mode that removes destination items no longer present in Spotify.
 - Optional unofficial `ytmusicapi` bridge for users who explicitly accept the tradeoffs.
 - Postgres migrations and multi-user deployment hardening.
-- Background worker queue with scheduled retries.
+- Durable background worker queue with scheduled retries.
