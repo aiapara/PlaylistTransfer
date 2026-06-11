@@ -80,6 +80,20 @@ export const client = {
     api<TransferDetail>(`/api/transfers/${id}/start`, {
       method: "POST"
     }),
+  approveMatch: (transferId: string, itemId: string, videoId: string) =>
+    api<TransferDetail>(`/api/transfers/${transferId}/items/${itemId}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ videoId })
+    }),
+  skipMatch: (transferId: string, itemId: string) =>
+    api<TransferDetail>(`/api/transfers/${transferId}/items/${itemId}/skip`, {
+      method: "POST"
+    }),
+  searchMatch: (transferId: string, itemId: string, query: string) =>
+    api<TransferDetail>(`/api/transfers/${transferId}/items/${itemId}/search`, {
+      method: "POST",
+      body: JSON.stringify({ query })
+    }),
   materializeLiked: () =>
     api<{ id: string; name: string }>("/api/playlists/liked-songs/materialize", {
       method: "POST"

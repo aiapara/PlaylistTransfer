@@ -156,6 +156,11 @@ a:hover {
   border: 1px solid color-mix(in srgb, var(--accent) 44%, transparent);
 }
 
+.notice.warning {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 44%, transparent);
+}
+
 .notice.stacked {
   align-items: flex-start;
 }
@@ -484,7 +489,7 @@ a:hover {
 .metrics {
   margin: 18px 0;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   gap: 10px;
 }
 
@@ -540,6 +545,171 @@ a:hover {
   margin: 8px 0 0;
   color: var(--muted);
   font-size: 13px;
+}
+
+.review-workspace {
+  margin-top: 20px;
+}
+
+.review-nav {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.review-nav span {
+  color: var(--muted);
+  font-weight: 700;
+  min-width: 70px;
+  text-align: center;
+}
+
+.filter-tabs {
+  margin: 16px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-tabs button {
+  min-height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  background: var(--panel-2);
+  cursor: pointer;
+}
+
+.filter-tabs button.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-2));
+}
+
+.filter-tabs span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.review-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-2);
+  overflow: hidden;
+}
+
+.review-source {
+  padding: 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.45fr);
+  gap: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.review-source h3,
+.review-source p {
+  margin: 6px 0 0;
+}
+
+.review-source small,
+.candidate-row small,
+.candidate-row span,
+.review-reason span {
+  color: var(--muted);
+}
+
+.review-reason {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.status-pill {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  display: inline-flex;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.status-approved,
+.status-matched,
+.status-transferred {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--line));
+}
+
+.status-review,
+.status-unmatched {
+  border-color: color-mix(in srgb, var(--warning) 58%, var(--line));
+}
+
+.status-skipped,
+.status-failed {
+  border-color: color-mix(in srgb, var(--accent-2) 44%, var(--line));
+}
+
+.review-search {
+  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--line);
+}
+
+.review-search .search-box {
+  margin: 0;
+}
+
+.candidate-list {
+  display: grid;
+}
+
+.candidate-row {
+  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.candidate-row:first-child {
+  border-top: 0;
+}
+
+.candidate-row.selected {
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+}
+
+.candidate-row strong,
+.candidate-row span,
+.candidate-row small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.candidate-row span,
+.candidate-row small {
+  margin-top: 3px;
+}
+
+.candidate-empty,
+.empty-review {
+  padding: 28px;
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  color: var(--muted);
+  text-align: center;
 }
 
 .match-section {
@@ -636,6 +806,12 @@ a:hover {
   }
 
   .match-row {
+    grid-template-columns: 1fr;
+  }
+
+  .review-source,
+  .review-search,
+  .candidate-row {
     grid-template-columns: 1fr;
   }
 }

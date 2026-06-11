@@ -22,6 +22,7 @@ import { useEffect, useMemo, useState } from "react";
 import { client, type DesktopSettings, type SettingsUpdate } from "./api.js";
 
 type Step = "setup" | "spotify" | "youtube" | "select" | "preview" | "transfer";
+type ReviewFilter = "all" | "matched" | "approved" | "review" | "unmatched" | "skipped";
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus>({ spotify: false, youtube: false });
@@ -176,6 +177,48 @@ export function App() {
     }
   }
 
+  async function approveMatch(item: MatchResult, videoId: string) {
+    if (!transfer || !item.id) return;
+    setBusy(true);
+    setError("");
+    try {
+      setTransfer(await client.approveMatch(transfer.id, item.id, videoId));
+      await refresh();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function skipMatch(item: MatchResult) {
+    if (!transfer || !item.id) return;
+    setBusy(true);
+    setError("");
+    try {
+      setTransfer(await client.skipMatch(transfer.id, item.id));
+      await refresh();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function searchMatch(item: MatchResult, query: string) {
+    if (!transfer || !item.id) return;
+    setBusy(true);
+    setError("");
+    try {
+      setTransfer(await client.searchMatch(transfer.id, item.id, query));
+      await refresh();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createSpotifyLikedPlaylist() {
     setBusy(true);
     setError("");
@@ -261,6 +304,9 @@ export function App() {
               busy={busy}
               onStart={() => void startTransfer()}
               onBack={() => setTransfer(undefined)}
+              onApprove={(item, videoId) => void approveMatch(item, videoId)}
+              onSkip={(item) => void skipMatch(item)}
+              onSearch={(item, query) => void searchMatch(item, query)}
             />
           )}
         </section>
@@ -573,27 +619,39 @@ function TransferView({
   progress,
   busy,
   onStart,
-  onBack
+  onBack,
+  onApprove,
+  onSkip,
+  onSearch
 }: {
   transfer: TransferDetail;
   progress: ReturnType<typeof calculateTransferProgress> | undefined;
   busy: boolean;
   onStart: () => void;
   onBack: () => void;
+  onApprove: (item: MatchResult, videoId: string) => void;
+  onSkip: (item: MatchResult) => void;
+  onSearch: (item: MatchResult, query: string) => void;
 }) {
-  const groups = useMemo(
-    () => ({
-      matched: transfer.matches.filter((item) => item.status === "matched" && item.selected?.confidence === "high"),
-      review: transfer.matches.filter((item) => item.status === "review"),
-      unmatched: transfer.matches.filter((item) => item.status === "unmatched"),
-      failed: transfer.matches.filter((item) => item.status === "failed"),
-      skipped: transfer.matches.filter((item) => item.status === "skipped"),
-      transferred: transfer.matches.filter((item) => item.status === "transferred")
-    }),
-    [transfer.matches]
-  );
-  const canStart = ["ready", "failed", "paused"].includes(transfer.status);
+  const [filter, setFilter] = useState<ReviewFilter>("all");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const groups = useMemo(() => groupMatches(transfer.matches), [transfer.matches]);
+  const reviewTotal = transfer.approved + transfer.skipped + transfer.unresolved;
+  const reviewed = transfer.approved + transfer.skipped;
+  const canStart = ["ready", "failed", "paused"].includes(transfer.status) && transfer.unresolved === 0;
   const progressView = progress ?? calculateTransferProgress(transfer);
+  const visibleItems = useMemo(() => filterMatches(transfer.matches, filter), [filter, transfer.matches]);
+  const activeItem = visibleItems[Math.min(activeIndex, Math.max(visibleItems.length - 1, 0))];
+
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [filter, transfer.id]);
+
+  useEffect(() => {
+    if (activeIndex >= visibleItems.length) {
+      setActiveIndex(Math.max(visibleItems.length - 1, 0));
+    }
+  }, [activeIndex, visibleItems.length]);
 
   return (
     <>
@@ -617,11 +675,19 @@ function TransferView({
 
       <div className="metrics">
         <Metric label="Matched" value={transfer.matched} />
+        <Metric label="Approved" value={transfer.approved} />
         <Metric label="Review" value={transfer.review} />
         <Metric label="Unmatched" value={transfer.unmatched} />
-        <Metric label="Transferred" value={transfer.transferred} />
-        <Metric label="Failed" value={transfer.failed} />
+        <Metric label="Skipped" value={transfer.skipped} />
+        <Metric label="Unresolved" value={transfer.unresolved} />
       </div>
+
+      {transfer.unresolved > 0 && transfer.status !== "matching" && (
+        <div className="notice warning">
+          <AlertCircle size={18} />
+          <span>{transfer.unresolved.toLocaleString()} tracks still need review. Approve or skip them before transferring.</span>
+        </div>
+      )}
 
       <div className="progress-wrap">
         <div className="progress-label">
@@ -636,15 +702,181 @@ function TransferView({
         </p>
       </div>
 
-      <MatchTable title="Matched" items={groups.matched} />
-      <MatchTable title="Manual Review" items={groups.review} />
-      <MatchTable title="Unmatched" items={groups.unmatched} />
-      <MatchTable title="Failed" items={groups.failed} />
-      <MatchTable title="Skipped" items={groups.skipped} />
-      <MatchTable title="Transferred" items={groups.transferred} />
+      <section className="review-workspace">
+        <div className="section-head">
+          <div>
+            <h2>Match Review</h2>
+            <p>{reviewed.toLocaleString()} of {reviewTotal.toLocaleString()} tracks reviewed</p>
+          </div>
+          <div className="review-nav">
+            <button className="secondary-button" onClick={() => setActiveIndex((value) => Math.max(0, value - 1))} disabled={activeIndex <= 0}>
+              Back
+            </button>
+            <span>{visibleItems.length === 0 ? "0 of 0" : `${Math.min(activeIndex + 1, visibleItems.length)} of ${visibleItems.length}`}</span>
+            <button
+              className="secondary-button"
+              onClick={() => setActiveIndex((value) => Math.min(visibleItems.length - 1, value + 1))}
+              disabled={activeIndex >= visibleItems.length - 1}
+            >
+              Next
+            </button>
+          </div>
+        </div>
+
+        <div className="filter-tabs">
+          {filterOptions(groups).map((option) => (
+            <button className={filter === option.id ? "active" : ""} key={option.id} onClick={() => setFilter(option.id)}>
+              {option.label}
+              <span>{option.count}</span>
+            </button>
+          ))}
+        </div>
+
+        {activeItem ? (
+          <ReviewItem
+            item={activeItem}
+            busy={busy}
+            onApprove={(videoId) => onApprove(activeItem, videoId)}
+            onSkip={() => onSkip(activeItem)}
+            onSearch={(query) => onSearch(activeItem, query)}
+          />
+        ) : (
+          <div className="empty-review">
+            <Check size={28} />
+            <strong>No tracks in this filter</strong>
+          </div>
+        )}
+      </section>
+
       <LogList transfer={transfer} />
     </>
   );
+}
+
+function ReviewItem({
+  item,
+  busy,
+  onApprove,
+  onSkip,
+  onSearch
+}: {
+  item: MatchResult;
+  busy: boolean;
+  onApprove: (videoId: string) => void;
+  onSkip: () => void;
+  onSearch: (query: string) => void;
+}) {
+  const [query, setQuery] = useState(defaultSearchQuery(item));
+
+  useEffect(() => {
+    setQuery(defaultSearchQuery(item));
+  }, [item.id]);
+
+  return (
+    <div className={`review-card status-${item.status}`}>
+      <div className="review-source">
+        <div>
+          <span className={`status-pill status-${item.status}`}>{statusLabel(item)}</span>
+          <h3>{item.track.title}</h3>
+          <p>{item.track.artists.join(", ")}</p>
+          <small>
+            {item.track.album ?? "No album"} · {formatDuration(item.track.durationMs)}
+          </small>
+        </div>
+        <div className="review-reason">
+          <strong>{item.reason ?? reasonForStatus(item)}</strong>
+          <span>{item.selectionSource === "manual" ? "Manually reviewed" : item.selectionSource === "automatic" ? "Automatic matcher" : "No approved match"}</span>
+        </div>
+      </div>
+
+      <div className="review-search">
+        <label className="search-box">
+          <Search size={18} />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search YouTube Music" />
+        </label>
+        <button className="secondary-button" onClick={() => onSearch(query)} disabled={busy || !query.trim()}>
+          Search Again
+        </button>
+        <button className="secondary-button" onClick={onSkip} disabled={busy || item.status === "skipped" || item.status === "transferred"}>
+          Skip Track
+        </button>
+      </div>
+
+      <div className="candidate-list">
+        {item.candidates.length === 0 ? (
+          <div className="candidate-empty">No candidates available. Try a different search.</div>
+        ) : (
+          item.candidates.map((candidate) => (
+            <div className={`candidate-row ${item.selected?.videoId === candidate.videoId ? "selected" : ""}`} key={candidate.videoId}>
+              <div>
+                <strong>{candidate.title}</strong>
+                <span>{candidate.channelTitle}</span>
+                <small>{formatDuration(candidate.durationMs)} · {(candidate.score * 100).toFixed(0)}% · {candidate.confidence}</small>
+              </div>
+              <button className="primary-button" onClick={() => onApprove(candidate.videoId)} disabled={busy || item.status === "transferred"}>
+                Approve
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function groupMatches(items: MatchResult[]) {
+  return {
+    all: items.filter((item) => ["matched", "approved", "review", "unmatched", "skipped"].includes(item.status)),
+    matched: items.filter((item) => item.status === "matched"),
+    approved: items.filter((item) => item.status === "approved"),
+    review: items.filter((item) => item.status === "review"),
+    unmatched: items.filter((item) => item.status === "unmatched"),
+    skipped: items.filter((item) => item.status === "skipped")
+  };
+}
+
+function filterMatches(items: MatchResult[], filter: ReviewFilter): MatchResult[] {
+  if (filter === "all") return groupMatches(items).all;
+  return items.filter((item) => item.status === filter);
+}
+
+function filterOptions(groups: ReturnType<typeof groupMatches>): { id: ReviewFilter; label: string; count: number }[] {
+  return [
+    { id: "all", label: "All", count: groups.all.length },
+    { id: "matched", label: "Matched", count: groups.matched.length },
+    { id: "approved", label: "Approved", count: groups.approved.length },
+    { id: "review", label: "Review", count: groups.review.length },
+    { id: "unmatched", label: "Unmatched", count: groups.unmatched.length },
+    { id: "skipped", label: "Skipped", count: groups.skipped.length }
+  ];
+}
+
+function statusLabel(item: MatchResult): string {
+  if (item.status === "matched") return "Automatic match";
+  if (item.status === "approved") return "Approved";
+  if (item.status === "review") return "Needs review";
+  if (item.status === "unmatched") return "Unmatched";
+  if (item.status === "skipped") return "Skipped";
+  return item.status;
+}
+
+function reasonForStatus(item: MatchResult): string {
+  if (item.status === "matched") return "High-confidence automatic match.";
+  if (item.status === "approved") return "Approved manually.";
+  if (item.status === "skipped") return "Skipped intentionally.";
+  return "Select a candidate or skip this track.";
+}
+
+function defaultSearchQuery(item: MatchResult): string {
+  return [item.track.title, item.track.artists[0], item.track.album].filter(Boolean).join(" ");
+}
+
+function formatDuration(durationMs: number | undefined): string {
+  if (!durationMs) return "Duration unavailable";
+  const totalSeconds = Math.round(durationMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
 function Metric({ label, value }: { label: string; value: number }) {
@@ -653,30 +885,6 @@ function Metric({ label, value }: { label: string; value: number }) {
       <span>{label}</span>
       <strong>{value.toLocaleString()}</strong>
     </div>
-  );
-}
-
-function MatchTable({ title, items }: { title: string; items: MatchResult[] }) {
-  if (items.length === 0) return null;
-
-  return (
-    <section className="match-section">
-      <h3>{title}</h3>
-      <div className="match-list">
-        {items.slice(0, 80).map((item) => (
-          <div className="match-row" key={`${item.track.sourceId}-${item.status}`}>
-            <div>
-              <strong>{item.track.title}</strong>
-              <span>{item.track.artists.join(", ")}{item.track.album ? ` · ${item.track.album}` : ""}</span>
-            </div>
-            <div>
-              <strong>{item.selected?.title ?? "No match"}</strong>
-              <span>{item.selected ? `${item.selected.channelTitle} · ${(item.selected.score * 100).toFixed(0)}%` : item.reason}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
   );
 }
 

@@ -37,6 +37,7 @@ let settings: typeof import("../apps/backend/src/routes/settings.js");
 let transferRoutes: typeof import("../apps/backend/src/routes/transfers.js");
 let transfers: typeof import("../apps/backend/src/services/transfers.js");
 let backendApp: typeof import("../apps/backend/src/app.js");
+let youtube: typeof import("../apps/backend/src/services/youtube.js");
 let db: Database.Database;
 let express: typeof import("express").default;
 
@@ -46,6 +47,7 @@ before(async () => {
   transferRoutes = await import("../apps/backend/src/routes/transfers.js");
   transfers = await import("../apps/backend/src/services/transfers.js");
   backendApp = await import("../apps/backend/src/app.js");
+  youtube = await import("../apps/backend/src/services/youtube.js");
   db = (await import("../apps/backend/src/db/index.js")).db;
   express = (await import("express")).default;
 });
@@ -77,6 +79,12 @@ test("matcher scoring prefers direct official-looking candidates over cover resu
 
   assert.ok(direct.score > 0.72);
   assert.ok(cover.score < direct.score);
+});
+
+test("YouTube ISO durations parse to milliseconds", () => {
+  assert.equal(youtube.parseYouTubeDuration("PT3M45S"), 225000);
+  assert.equal(youtube.parseYouTubeDuration("PT1H2M3S"), 3723000);
+  assert.equal(youtube.parseYouTubeDuration("not-a-duration"), undefined);
 });
 
 test("settings config formatting round-trips quoted values and validates redirects", () => {
@@ -131,6 +139,7 @@ test("CSV output escapes quotes and includes failed/review/unmatched states", ()
       selected: undefined,
       candidates: [],
       status: "failed",
+      selectionSource: "none",
       reason: "Could not add"
     }
   ]);
@@ -148,6 +157,36 @@ test("stale matching and running transfers are normalized safely", () => {
 
   assert.equal(statusFor("tr_stale_running"), "paused");
   assert.equal(statusFor("tr_stale_matching"), "failed");
+});
+
+test("review decisions persist selected candidates and skipped state", () => {
+  insertTransfer("tr_review_decisions", "ready");
+  insertReviewItem("tr_review_decisions", "ti_review_decisions");
+
+  const approved = transfers.approveTransferItem("tr_review_decisions", "ti_review_decisions", "video-review");
+  const approvedItem = approved.matches.find((item) => item.id === "ti_review_decisions");
+
+  assert.equal(approved.approved, 1);
+  assert.equal(approved.unresolved, 0);
+  assert.equal(approvedItem?.status, "approved");
+  assert.equal(approvedItem?.selectionSource, "manual");
+  assert.equal(approvedItem?.selected?.videoId, "video-review");
+  assert.ok(approvedItem?.reviewedAt);
+
+  insertReviewItem("tr_review_decisions", "ti_skip_decisions");
+  const skipped = transfers.skipTransferItem("tr_review_decisions", "ti_skip_decisions");
+  const skippedItem = skipped.matches.find((item) => item.id === "ti_skip_decisions");
+
+  assert.equal(skippedItem?.status, "skipped");
+  assert.equal(skippedItem?.selectionSource, "none");
+  assert.ok(skippedItem?.reviewedAt);
+});
+
+test("transfer start is blocked while review items remain unresolved", () => {
+  insertTransfer("tr_unresolved", "ready");
+  insertReviewItem("tr_unresolved", "ti_unresolved");
+
+  assert.throws(() => transfers.beginTransferExecution("tr_unresolved"), /still need review/);
 });
 
 test("web mode app creation does not normalize desktop stale transfers", () => {
@@ -202,7 +241,10 @@ test("transfer routes create quickly and surface start conflicts", async () => {
         const error = new Error("Transfer is already running.") as Error & { status: number };
         error.status = 409;
         throw error;
-      }
+      },
+      approveTransferItem: () => detail,
+      skipTransferItem: () => detail,
+      searchTransferItemCandidates: async () => detail
     })
   );
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -246,6 +288,25 @@ function insertMatchedItem(transferId: string, id: string): void {
   ).run(id, transferId);
 }
 
+function insertReviewItem(transferId: string, id: string): void {
+  const candidates = JSON.stringify([
+    {
+      videoId: "video-review",
+      title: "Song Official Audio",
+      channelTitle: "Artist",
+      durationMs: 180000,
+      score: 0.61,
+      confidence: "medium"
+    }
+  ]);
+  db.prepare(
+    `INSERT INTO transfer_items (
+      id, transfer_id, source_track_id, track_title, artists_json, album, duration_ms,
+      selected_video_id, selected_title, selected_channel, score, status, selection_source, reason, candidates_json
+    ) VALUES (?, ?, ?, 'Song', '["Artist"]', 'Album', 180000, 'video-review', 'Song Official Audio', 'Artist', 0.61, 'review', 'automatic', 'Needs review.', ?)`
+  ).run(id, transferId, `${id}-source`, candidates);
+}
+
 function statusFor(id: string): string {
   return (db.prepare("SELECT status FROM transfers WHERE id = ?").get(id) as { status: string }).status;
 }
@@ -260,8 +321,10 @@ function transferDetail(overrides: Partial<TransferDetail>): TransferDetail {
     matchingCompleted: 0,
     transferable: 0,
     matched: 0,
+    approved: 0,
     review: 0,
     unmatched: 0,
+    unresolved: 0,
     skipped: 0,
     transferred: 0,
     added: 0,

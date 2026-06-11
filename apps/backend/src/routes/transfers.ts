@@ -1,7 +1,15 @@
 import { Router } from "express";
 import { z } from "zod";
 import { listSpotifyPlaylists, getPlaylistTracks } from "../services/spotify.js";
-import { beginTransferExecution, createTransfer, getTransfer, listTransfers } from "../services/transfers.js";
+import {
+  approveTransferItem,
+  beginTransferExecution,
+  createTransfer,
+  getTransfer,
+  listTransfers,
+  searchTransferItemCandidates,
+  skipTransferItem
+} from "../services/transfers.js";
 
 type TransferRouteDeps = {
   listSpotifyPlaylists: typeof listSpotifyPlaylists;
@@ -10,10 +18,19 @@ type TransferRouteDeps = {
   getTransfer: typeof getTransfer;
   listTransfers: typeof listTransfers;
   beginTransferExecution: typeof beginTransferExecution;
+  approveTransferItem: typeof approveTransferItem;
+  skipTransferItem: typeof skipTransferItem;
+  searchTransferItemCandidates: typeof searchTransferItemCandidates;
 };
 
 const createSchema = z.object({
   playlistId: z.string().min(1)
+});
+const approveSchema = z.object({
+  videoId: z.string().min(1)
+});
+const searchSchema = z.object({
+  query: z.string().trim().optional()
 });
 
 export function createTransfersRouter(deps: TransferRouteDeps = defaultDeps): Router {
@@ -48,6 +65,32 @@ export function createTransfersRouter(deps: TransferRouteDeps = defaultDeps): Ro
       const job = deps.beginTransferExecution(req.params.id);
       void job.done.catch(() => undefined);
       return res.json(job.transfer);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post("/:id/items/:itemId/approve", (req, res, next) => {
+    try {
+      const { videoId } = approveSchema.parse(req.body);
+      return res.json(deps.approveTransferItem(req.params.id, req.params.itemId, videoId));
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post("/:id/items/:itemId/skip", (req, res, next) => {
+    try {
+      return res.json(deps.skipTransferItem(req.params.id, req.params.itemId));
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post("/:id/items/:itemId/search", async (req, res, next) => {
+    try {
+      const { query } = searchSchema.parse(req.body);
+      return res.json(await deps.searchTransferItemCandidates(req.params.id, req.params.itemId, query));
     } catch (error) {
       return next(error);
     }
@@ -95,7 +138,10 @@ const defaultDeps: TransferRouteDeps = {
   createTransfer,
   getTransfer,
   listTransfers,
-  beginTransferExecution
+  beginTransferExecution,
+  approveTransferItem,
+  skipTransferItem,
+  searchTransferItemCandidates
 };
 
 export const transfersRouter = createTransfersRouter();

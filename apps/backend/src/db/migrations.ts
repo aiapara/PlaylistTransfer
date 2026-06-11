@@ -75,6 +75,22 @@ const migrations: Migration[] = [
       SET status = 'transferred'
       WHERE status = 'added';
     `
+  },
+  {
+    id: 3,
+    name: "manual_review_metadata",
+    sql: `
+      ALTER TABLE transfer_items ADD COLUMN selection_source TEXT NOT NULL DEFAULT 'automatic';
+      ALTER TABLE transfer_items ADD COLUMN reviewed_at TEXT;
+
+      UPDATE transfer_items
+      SET selection_source = 'none'
+      WHERE status IN ('unmatched', 'skipped');
+
+      UPDATE transfer_items
+      SET reviewed_at = CURRENT_TIMESTAMP
+      WHERE status = 'skipped';
+    `
   }
 ];
 

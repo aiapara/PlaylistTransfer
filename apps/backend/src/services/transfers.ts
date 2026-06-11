@@ -1,6 +1,7 @@
 import type {
   CandidateMatch,
   MatchResult,
+  MatchSelectionSource,
   TrackRef,
   TransferDetail,
   TransferItemStatus,
@@ -11,8 +12,8 @@ import { db } from "../db/index.js";
 import { env } from "../env.js";
 import { randomId } from "../lib/crypto.js";
 import { sleep } from "../lib/http.js";
-import { matchTrack } from "./matcher.js";
-import { addVideoToPlaylist, findOrCreatePlaylist, listPlaylistVideoIds } from "./youtube.js";
+import { matchTrack, scoreCandidate } from "./matcher.js";
+import { addVideoToPlaylist, findOrCreatePlaylist, listPlaylistVideoIds, searchYoutube } from "./youtube.js";
 
 type TransferRow = {
   id: string;
@@ -40,8 +41,11 @@ type TransferItemRow = {
   selected_channel?: string;
   score: number;
   status: TransferItemStatus | "added";
+  selection_source: MatchSelectionSource;
   reason?: string;
   attempts: number;
+  added_at?: string;
+  reviewed_at?: string;
   candidates_json: string;
 };
 
@@ -62,7 +66,7 @@ export type StartedTransferJob = {
 
 const runningTransfers = new Set<string>();
 const matchingTransfers = new Set<string>();
-const itemStatuses: TransferItemStatus[] = ["matched", "review", "unmatched", "skipped", "failed", "transferred"];
+const itemStatuses: TransferItemStatus[] = ["matched", "approved", "review", "unmatched", "skipped", "failed", "transferred"];
 
 export function createTransfer(playlist: TransferPlaylistInput, loadTracks: () => Promise<TrackRef[]>): string {
   const id = randomId("tr");
@@ -106,6 +110,7 @@ export function beginTransferExecution(id: string): StartedTransferJob {
   if (!["ready", "failed", "paused"].includes(transfer.status)) {
     throw httpError(409, `Transfer cannot start from status ${transfer.status}.`);
   }
+  assertNoUnresolvedItems(id);
 
   runningTransfers.add(id);
   updateTransferStatus(id, "running");
@@ -122,6 +127,88 @@ export function beginTransferExecution(id: string): StartedTransferJob {
 
 export async function runTransfer(id: string): Promise<void> {
   await beginTransferExecution(id).done;
+}
+
+export function approveTransferItem(transferId: string, itemId: string, videoId: string): TransferDetail {
+  assertTransferEditable(transferId);
+  const row = getTransferItemRow(transferId, itemId);
+  if (!row) throw httpError(404, "Transfer item not found.");
+
+  const candidate = candidatesForRow(row).find((item) => item.videoId === videoId);
+  if (!candidate) throw httpError(400, "Candidate is not available for this track. Search again before approving it.");
+
+  db.prepare(
+    `UPDATE transfer_items
+     SET selected_video_id = ?,
+         selected_title = ?,
+         selected_channel = ?,
+         score = ?,
+         status = 'approved',
+         selection_source = 'manual',
+         reason = NULL,
+         attempts = 0,
+         reviewed_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND transfer_id = ?`
+  ).run(candidate.videoId, candidate.title, candidate.channelTitle, candidate.score, itemId, transferId);
+
+  logTransfer(transferId, "info", `Approved match: ${row.track_title} -> ${candidate.title}`);
+  return getTransferOrThrow(transferId);
+}
+
+export function skipTransferItem(transferId: string, itemId: string): TransferDetail {
+  assertTransferEditable(transferId);
+  const row = getTransferItemRow(transferId, itemId);
+  if (!row) throw httpError(404, "Transfer item not found.");
+
+  markItem(itemId, "skipped", "Skipped by user.", true);
+  logTransfer(transferId, "info", `Skipped by user: ${row.track_title}`);
+  return getTransferOrThrow(transferId);
+}
+
+export async function searchTransferItemCandidates(transferId: string, itemId: string, query?: string): Promise<TransferDetail> {
+  assertTransferEditable(transferId);
+  const row = getTransferItemRow(transferId, itemId);
+  if (!row) throw httpError(404, "Transfer item not found.");
+
+  const track = trackFromRow(row);
+  const searchQuery = query?.trim() || [track.title, track.artists[0], track.album].filter(Boolean).join(" ");
+  const candidates = (await searchYoutube(searchQuery))
+    .map((candidate) => scoreCandidate(track, candidate))
+    .sort((a, b) => b.score - a.score);
+  const selected = candidates[0];
+  const status: TransferItemStatus = candidates.length > 0 ? "review" : "unmatched";
+  const reason =
+    candidates.length > 0
+      ? `Search returned ${candidates.length} candidates. Select one to approve it.`
+      : "Search returned no YouTube candidates.";
+
+  db.prepare(
+    `UPDATE transfer_items
+     SET selected_video_id = ?,
+         selected_title = ?,
+         selected_channel = ?,
+         score = ?,
+         status = ?,
+         selection_source = 'none',
+         reason = ?,
+         attempts = 0,
+         reviewed_at = NULL,
+         candidates_json = ?
+     WHERE id = ? AND transfer_id = ?`
+  ).run(
+    selected?.videoId ?? null,
+    selected?.title ?? null,
+    selected?.channelTitle ?? null,
+    selected?.score ?? 0,
+    status,
+    reason,
+    JSON.stringify(candidates),
+    itemId,
+    transferId
+  );
+
+  logTransfer(transferId, candidates.length > 0 ? "info" : "warn", `Searched again for ${row.track_title}.`);
+  return getTransferOrThrow(transferId);
 }
 
 export function normalizeStaleTransfers(): void {
@@ -219,7 +306,7 @@ async function executeTransfer(id: string): Promise<void> {
       .prepare(
         `SELECT * FROM transfer_items
          WHERE transfer_id = ?
-           AND status IN ('matched', 'failed')
+           AND status IN ('matched', 'approved', 'failed')
            AND selected_video_id IS NOT NULL
            AND attempts < ?
          ORDER BY rowid`
@@ -276,8 +363,8 @@ function saveMatch(transferId: string, result: MatchResult): void {
   db.prepare(
     `INSERT INTO transfer_items (
       id, transfer_id, source_track_id, track_title, artists_json, album, duration_ms,
-      selected_video_id, selected_title, selected_channel, score, status, reason, candidates_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      selected_video_id, selected_title, selected_channel, score, status, selection_source, reason, candidates_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     randomId("ti"),
     transferId,
@@ -291,6 +378,7 @@ function saveMatch(transferId: string, result: MatchResult): void {
     result.selected?.channelTitle ?? null,
     result.selected?.score ?? 0,
     result.status,
+    result.selectionSource,
     result.reason ?? null,
     JSON.stringify(result.candidates)
   );
@@ -319,10 +407,21 @@ function updateTransferStatus(id: string, status: TransferSummary["status"]): vo
   db.prepare("UPDATE transfers SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
 }
 
-function markItem(id: string, status: TransferItemStatus, reason?: string): void {
-  db.prepare("UPDATE transfer_items SET status = ?, reason = COALESCE(?, reason), added_at = CURRENT_TIMESTAMP WHERE id = ?").run(
+function markItem(id: string, status: TransferItemStatus, reason?: string, reviewed = false): void {
+  db.prepare(
+    `UPDATE transfer_items
+     SET status = ?,
+         reason = COALESCE(?, reason),
+         added_at = CASE WHEN ? IN ('transferred', 'skipped') THEN CURRENT_TIMESTAMP ELSE added_at END,
+         reviewed_at = CASE WHEN ? THEN CURRENT_TIMESTAMP ELSE reviewed_at END,
+         selection_source = CASE WHEN ? = 'skipped' THEN 'none' ELSE selection_source END
+     WHERE id = ?`
+  ).run(
     status,
     reason ?? null,
+    status,
+    reviewed ? 1 : 0,
+    status,
     id
   );
 }
@@ -334,6 +433,35 @@ function incrementAttempts(id: string): void {
 function countItems(transferId: string, status: TransferItemStatus): number {
   return (db.prepare("SELECT COUNT(*) AS count FROM transfer_items WHERE transfer_id = ? AND status = ?").get(transferId, status) as { count: number })
     .count;
+}
+
+function assertNoUnresolvedItems(transferId: string): void {
+  const unresolved = countItems(transferId, "review") + countItems(transferId, "unmatched");
+  if (unresolved > 0) {
+    throw httpError(409, `${unresolved} tracks still need review. Approve or skip them before starting transfer.`);
+  }
+}
+
+function assertTransferEditable(transferId: string): void {
+  if (runningTransfers.has(transferId) || matchingTransfers.has(transferId)) {
+    throw httpError(409, "Transfer is busy. Wait for matching or transfer execution to finish before editing review decisions.");
+  }
+
+  const transfer = getTransferRow(transferId);
+  if (!transfer) throw httpError(404, "Transfer not found.");
+  if (transfer.status === "running" || transfer.status === "matching") {
+    throw httpError(409, `Transfer cannot be edited while ${transfer.status}.`);
+  }
+}
+
+function getTransferItemRow(transferId: string, itemId: string): TransferItemRow | undefined {
+  return db.prepare("SELECT * FROM transfer_items WHERE transfer_id = ? AND id = ?").get(transferId, itemId) as TransferItemRow | undefined;
+}
+
+function getTransferOrThrow(id: string): TransferDetail {
+  const transfer = getTransfer(id);
+  if (!transfer) throw httpError(404, "Transfer not found.");
+  return transfer;
 }
 
 function itemCountsForTransfers(ids: string[]): Map<string, TransferCounts> {
@@ -383,7 +511,8 @@ function logTransfer(transferId: string, level: TransferLog["level"], message: s
 function toSummary(row: TransferRow, counts: TransferCounts): TransferSummary {
   const matchingCompleted = itemStatuses.reduce((total, status) => total + counts[status], 0);
   const transferred = counts.transferred;
-  const transferable = counts.matched + counts.failed + counts.skipped + counts.transferred;
+  const transferable = counts.matched + counts.approved + counts.failed + counts.skipped + counts.transferred;
+  const unresolved = counts.review + counts.unmatched;
 
   return {
     id: row.id,
@@ -394,8 +523,10 @@ function toSummary(row: TransferRow, counts: TransferCounts): TransferSummary {
     matchingCompleted,
     transferable,
     matched: counts.matched,
+    approved: counts.approved,
     review: counts.review,
     unmatched: counts.unmatched,
+    unresolved,
     skipped: counts.skipped,
     transferred,
     added: transferred,
@@ -407,7 +538,9 @@ function toSummary(row: TransferRow, counts: TransferCounts): TransferSummary {
 
 function toMatchResult(row: TransferItemRow): MatchResult {
   const candidates = JSON.parse(row.candidates_json) as CandidateMatch[];
+  const selected = selectedCandidateFromRow(row, candidates);
   return {
+    id: row.id,
     track: {
       sourceId: row.source_track_id,
       title: row.track_title,
@@ -415,18 +548,42 @@ function toMatchResult(row: TransferItemRow): MatchResult {
       album: row.album,
       durationMs: row.duration_ms
     },
-    selected: row.selected_video_id
-      ? {
-          videoId: row.selected_video_id,
-          title: row.selected_title ?? "",
-          channelTitle: row.selected_channel ?? "",
-          score: row.score,
-          confidence: row.score >= env.MATCH_CONFIDENCE_THRESHOLD ? "high" : row.score >= 0.52 ? "medium" : "low"
-        }
-      : undefined,
+    selected,
     candidates,
     status: normalizeItemStatus(row.status),
-    reason: row.reason
+    selectionSource: row.selection_source,
+    reason: row.reason,
+    reviewedAt: row.reviewed_at
+  };
+}
+
+function candidatesForRow(row: TransferItemRow): CandidateMatch[] {
+  return JSON.parse(row.candidates_json) as CandidateMatch[];
+}
+
+function selectedCandidateFromRow(row: TransferItemRow, candidates: CandidateMatch[]): CandidateMatch | undefined {
+  if (!row.selected_video_id) return undefined;
+
+  const existing = candidates.find((candidate) => candidate.videoId === row.selected_video_id);
+  return {
+    ...existing,
+    videoId: row.selected_video_id,
+    title: row.selected_title ?? existing?.title ?? "",
+    channelTitle: row.selected_channel ?? existing?.channelTitle ?? "",
+    description: existing?.description,
+    durationMs: existing?.durationMs,
+    score: row.score,
+    confidence: row.score >= env.MATCH_CONFIDENCE_THRESHOLD ? "high" : row.score >= 0.52 ? "medium" : "low"
+  };
+}
+
+function trackFromRow(row: TransferItemRow): TrackRef {
+  return {
+    sourceId: row.source_track_id,
+    title: row.track_title,
+    artists: JSON.parse(row.artists_json) as string[],
+    album: row.album,
+    durationMs: row.duration_ms
   };
 }
 

@@ -107,3 +107,4 @@ Implemented as a conversion:
 - Transfer preview creates a transfer quickly and performs matching in the background.
 - Transfer execution uses per-transfer locks, stale startup states are normalized, and item states preserve `transferred`, `failed`, and `skipped`.
 - SQLite schema setup now runs through ordered migrations recorded in `schema_migrations`.
+- Manual review and match override is integrated into the transfer screen, with durable approve, skip, and search-again decisions stored on `transfer_items`.

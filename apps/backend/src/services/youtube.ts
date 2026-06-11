@@ -30,6 +30,13 @@ type YouTubeSearchItem = {
   };
 };
 
+type YouTubeVideoDetails = {
+  id: string;
+  contentDetails?: {
+    duration?: string;
+  };
+};
+
 export function youtubeLoginUrl(state: string): string {
   assertYoutubeConfig();
   return `${GOOGLE_AUTH}?${new URLSearchParams({
@@ -121,7 +128,7 @@ export async function searchYoutube(query: string): Promise<CandidateMatch[]> {
     })}`
   );
 
-  return response.items
+  const baseCandidates: CandidateMatch[] = response.items
     .filter((item) => item.id.videoId)
     .map((item) => ({
       videoId: item.id.videoId!,
@@ -131,6 +138,14 @@ export async function searchYoutube(query: string): Promise<CandidateMatch[]> {
       score: 0,
       confidence: "low"
     }));
+
+  if (baseCandidates.length === 0) return baseCandidates;
+
+  const durations = await videoDurations(baseCandidates.map((candidate) => candidate.videoId)).catch(() => new Map<string, number>());
+  return baseCandidates.map((candidate) => ({
+    ...candidate,
+    durationMs: durations.get(candidate.videoId)
+  }));
 }
 
 export async function findOrCreatePlaylist(title: string, description: string): Promise<string> {
@@ -209,4 +224,30 @@ async function listMyPlaylists(): Promise<YouTubePlaylist[]> {
   } while (pageToken);
 
   return playlists;
+}
+
+async function videoDurations(videoIds: string[]): Promise<Map<string, number>> {
+  const response = await youtubeRequest<{ items: YouTubeVideoDetails[] }>(
+    `/videos?${new URLSearchParams({
+      part: "contentDetails",
+      id: videoIds.join(",")
+    })}`
+  );
+
+  return new Map(
+    response.items.flatMap((item) => {
+      const durationMs = parseYouTubeDuration(item.contentDetails?.duration ?? "");
+      return durationMs === undefined ? [] : [[item.id, durationMs]];
+    })
+  );
+}
+
+export function parseYouTubeDuration(value: string): number | undefined {
+  const match = /^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(value);
+  if (!match) return undefined;
+
+  const hours = Number(match[1] ?? 0);
+  const minutes = Number(match[2] ?? 0);
+  const seconds = Number(match[3] ?? 0);
+  return ((hours * 60 + minutes) * 60 + seconds) * 1000;
 }

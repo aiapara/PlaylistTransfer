@@ -30,24 +30,31 @@ export type CandidateMatch = {
   title: string;
   channelTitle: string;
   description?: string;
+  durationMs?: number;
   score: number;
   confidence: "high" | "medium" | "low";
 };
 
 export type TransferItemStatus =
   | "matched"
+  | "approved"
   | "review"
   | "unmatched"
   | "skipped"
   | "failed"
   | "transferred";
 
+export type MatchSelectionSource = "automatic" | "manual" | "none";
+
 export type MatchResult = {
+  id?: string;
   track: TrackRef;
   selected?: CandidateMatch;
   candidates: CandidateMatch[];
   status: TransferItemStatus;
+  selectionSource: MatchSelectionSource;
   reason?: string;
+  reviewedAt?: string;
 };
 
 export type TransferStatus =
@@ -68,8 +75,10 @@ export type TransferSummary = {
   matchingCompleted: number;
   transferable: number;
   matched: number;
+  approved: number;
   review: number;
   unmatched: number;
+  unresolved: number;
   skipped: number;
   transferred: number;
   /** @deprecated Use transferred. Kept for older UI/API consumers. */

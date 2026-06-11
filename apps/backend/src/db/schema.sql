@@ -34,9 +34,11 @@ CREATE TABLE IF NOT EXISTS transfer_items (
   selected_channel TEXT,
   score REAL NOT NULL DEFAULT 0,
   status TEXT NOT NULL,
+  selection_source TEXT NOT NULL DEFAULT 'automatic',
   reason TEXT,
   attempts INTEGER NOT NULL DEFAULT 0,
   added_at TEXT,
+  reviewed_at TEXT,
   candidates_json TEXT NOT NULL DEFAULT '[]',
   FOREIGN KEY (transfer_id) REFERENCES transfers(id) ON DELETE CASCADE
 );

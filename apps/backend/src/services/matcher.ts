@@ -27,11 +27,11 @@ export async function matchTrack(track: TrackRef): Promise<MatchResult> {
   const selected = scored[0];
 
   if (!selected) {
-    return { track, candidates: [], status: "unmatched", reason: "No YouTube candidates found." };
+    return { track, candidates: [], status: "unmatched", selectionSource: "none", reason: "No YouTube candidates found." };
   }
 
   if (selected.score >= env.MATCH_CONFIDENCE_THRESHOLD) {
-    return { track, selected, candidates: scored, status: "matched" };
+    return { track, selected, candidates: scored, status: "matched", selectionSource: "automatic" };
   }
 
   if (selected.score >= 0.52) {
@@ -40,6 +40,7 @@ export async function matchTrack(track: TrackRef): Promise<MatchResult> {
       selected,
       candidates: scored,
       status: "review",
+      selectionSource: "automatic",
       reason: "Best candidate needs manual review."
     };
   }
@@ -48,6 +49,7 @@ export async function matchTrack(track: TrackRef): Promise<MatchResult> {
     track,
     candidates: scored,
     status: "unmatched",
+    selectionSource: "none",
     reason: "No candidate reached the minimum confidence score."
   };
 }

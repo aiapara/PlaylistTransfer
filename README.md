@@ -24,7 +24,8 @@ Sources:
 - Google OAuth login for YouTube Data API.
 - Playlist picker with a virtual "Spotify Liked Songs" source.
 - Match preview with confidence scores.
-- Matched, unmatched, skipped, and low-confidence manual review states.
+- Manual review workflow for low-confidence and unmatched tracks, including candidate approval, skip decisions, search again, and persisted review progress.
+- Matched, manually approved, unmatched, skipped, transferred, and low-confidence manual review states.
 - Batch transfer with retry, rate-limit delays, resumable transfer records, and operation logs.
 - Duplicate destination detection by video ID.
 - Transfer history.
@@ -123,10 +124,28 @@ Desktop OAuth starts in the system browser instead of navigating the main Electr
 ## Architecture Notes
 
 - The React frontend is reused as-is and continues to call same-origin `/api/*` routes.
-- The Node backend is reused inside Electron and still owns OAuth callbacks, playlist reads, matching, transfer execution, and CSV export.
+- The Node backend is reused inside Electron and still owns OAuth callbacks, playlist reads, matching, manual review decisions, transfer execution, and CSV export.
 - The SQLite token and transfer store remains local-only.
-- SQLite schema changes are applied through ordered startup migrations recorded in `schema_migrations`.
+- SQLite schema changes are applied through ordered startup migrations recorded in `schema_migrations`. Manual review metadata lives on `transfer_items` with the selected candidate, item status, `selection_source`, and `reviewed_at`.
 - Hosted-server deployment, remote secret managers, and multi-user infrastructure are no longer part of the recommended path.
+
+## Manual Review Flow
+
+After matching finishes, the transfer screen shows a Match Review workspace. Use the filters for matched, approved, review, unmatched, and skipped tracks. Tracks in review or unmatched must be approved or skipped before transfer starts.
+
+Review actions are persisted immediately:
+
+- Approve stores the selected YouTube candidate as the official match and marks the item `approved`.
+- Skip marks the item `skipped`, excluding it from transfer.
+- Search Again updates the stored candidate list for that track and keeps the item unresolved until a candidate is approved or the track is skipped.
+
+The backend routes are:
+
+- `POST /api/transfers/:id/items/:itemId/approve`
+- `POST /api/transfers/:id/items/:itemId/skip`
+- `POST /api/transfers/:id/items/:itemId/search`
+
+Transfer start is blocked while unresolved `review` or `unmatched` items remain, so users do not accidentally omit uncertain tracks.
 
 ## Development Checks
 
@@ -145,12 +164,11 @@ npm test
 
 - Destination insertion uses YouTube video IDs, because the official API does not insert YouTube Music song IDs.
 - YouTube API quota is significant: `playlistItems.insert` costs quota units per track.
-- Search quality depends on YouTube results. Low-confidence results are held for review and skipped unless manually selected in a future enhancement.
+- Search quality depends on YouTube results. Low-confidence results are held for review and can be approved, skipped, or searched again.
 - Resume is implemented at transfer-item level; a killed process can continue from pending/failed items when transfer is started again.
 
 ## Future Improvements
 
-- Manual candidate override UI for low-confidence matches.
 - True sync mode that removes destination items no longer present in Spotify.
 - Optional unofficial `ytmusicapi` bridge for users who explicitly accept the tradeoffs.
 - Postgres migrations and multi-user deployment hardening.
