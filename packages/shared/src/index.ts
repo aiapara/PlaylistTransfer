@@ -25,6 +25,55 @@ export type TrackRef = {
   isrc?: string;
 };
 
+export type CandidateSourceKind = "youtube_video" | "youtube_music" | "official_artist" | "official_track";
+
+export type CandidateThumbnail = {
+  url: string;
+  width?: number;
+  height?: number;
+};
+
+export type CandidateArtistMetadata = {
+  name: string;
+  channelId?: string;
+  isOfficial?: boolean;
+};
+
+export type CandidateMetadata = {
+  source: CandidateSourceKind;
+  sourceLabel: string;
+  videoUrl?: string;
+  album?: string;
+  releaseYear?: number;
+  artists?: CandidateArtistMetadata[];
+  thumbnails?: {
+    default?: CandidateThumbnail;
+    medium?: CandidateThumbnail;
+    high?: CandidateThumbnail;
+  };
+  isOfficialArtist?: boolean;
+  isOfficialTrack?: boolean;
+  music?: {
+    catalogSource?: string;
+    topicCategories?: string[];
+    releaseType?: "single" | "album" | "video" | "unknown";
+  };
+  badges?: string[];
+};
+
+export type CandidateDiagnostics = {
+  titleSimilarity: number;
+  artistSimilarity: number;
+  durationSimilarity?: number;
+  albumSimilarity?: number;
+  overallScore: number;
+  confidence: "high" | "medium" | "low";
+  durationDifferenceMs?: number;
+  penalties: string[];
+  bonuses: string[];
+  reasons: string[];
+};
+
 export type CandidateMatch = {
   videoId: string;
   title: string;
@@ -33,6 +82,8 @@ export type CandidateMatch = {
   durationMs?: number;
   score: number;
   confidence: "high" | "medium" | "low";
+  metadata?: CandidateMetadata;
+  diagnostics?: CandidateDiagnostics;
 };
 
 export type TransferItemStatus =
@@ -46,6 +97,13 @@ export type TransferItemStatus =
 
 export type MatchSelectionSource = "automatic" | "manual" | "none";
 
+export type MatchExplanation = {
+  summary: string;
+  reasons: string[];
+  candidateCount: number;
+  bestScore?: number;
+};
+
 export type MatchResult = {
   id?: string;
   track: TrackRef;
@@ -54,6 +112,7 @@ export type MatchResult = {
   status: TransferItemStatus;
   selectionSource: MatchSelectionSource;
   reason?: string;
+  explanation?: MatchExplanation;
   reviewedAt?: string;
 };
 
@@ -65,6 +124,39 @@ export type TransferStatus =
   | "paused"
   | "completed"
   | "failed";
+
+export type ReviewFilter = "all" | "matched" | "approved" | "review" | "unmatched" | "skipped";
+
+export type ReviewSessionState = {
+  activeFilter?: ReviewFilter;
+  activeItemId?: string;
+  selectedCandidateIds?: Record<string, string>;
+  searchQueries?: Record<string, string>;
+  updatedAt?: string;
+};
+
+export type BulkReviewAction = "approve-best" | "approve-threshold" | "skip-remaining" | "rerun-unmatched";
+
+export type TransferValidationIssue = {
+  code:
+    | "unresolved_items"
+    | "missing_candidate"
+    | "duplicate_video"
+    | "unavailable_video"
+    | "availability_check_failed";
+  message: string;
+  itemId?: string;
+  trackTitle?: string;
+  videoId?: string;
+  count?: number;
+};
+
+export type TransferValidationResult = {
+  ok: boolean;
+  errors: TransferValidationIssue[];
+  warnings: TransferValidationIssue[];
+  checkedAt: string;
+};
 
 export type TransferSummary = {
   id: string;
@@ -92,6 +184,7 @@ export type TransferDetail = TransferSummary & {
   playlistDescription: string;
   matches: MatchResult[];
   logs: TransferLog[];
+  reviewState: ReviewSessionState;
 };
 
 export type TransferLog = {

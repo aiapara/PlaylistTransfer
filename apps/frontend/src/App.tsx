@@ -1,9 +1,22 @@
-import { calculateTransferProgress, type AuthStatus, type MatchResult, type SourcePlaylist, type TransferDetail, type TransferSummary } from "@playlist-transfer/shared";
+import {
+  calculateTransferProgress,
+  type AuthStatus,
+  type BulkReviewAction,
+  type CandidateMatch,
+  type MatchResult,
+  type ReviewSessionState,
+  type SourcePlaylist,
+  type TransferDetail,
+  type TransferSummary,
+  type TransferValidationResult
+} from "@playlist-transfer/shared";
 import {
   AlertCircle,
   Check,
+  CheckCheck,
   ChevronRight,
   Download,
+  ExternalLink,
   FolderOpen,
   History,
   ListMusic,
@@ -13,6 +26,8 @@ import {
   Save,
   Search,
   Settings,
+  ShieldAlert,
+  SkipForward,
   Sun,
   ThumbsUp,
   Youtube
@@ -22,7 +37,7 @@ import { useEffect, useMemo, useState } from "react";
 import { client, type DesktopSettings, type SettingsUpdate } from "./api.js";
 
 type Step = "setup" | "spotify" | "youtube" | "select" | "preview" | "transfer";
-type ReviewFilter = "all" | "matched" | "approved" | "review" | "unmatched" | "skipped";
+type ReviewFilter = NonNullable<ReviewSessionState["activeFilter"]>;
 
 export function App() {
   const [auth, setAuth] = useState<AuthStatus>({ spotify: false, youtube: false });
@@ -32,6 +47,7 @@ export function App() {
   const [playlists, setPlaylists] = useState<SourcePlaylist[]>([]);
   const [selectedPlaylistId, setSelectedPlaylistId] = useState("liked-songs");
   const [transfer, setTransfer] = useState<TransferDetail | undefined>();
+  const [validation, setValidation] = useState<TransferValidationResult | undefined>();
   const [history, setHistory] = useState<TransferSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -154,7 +170,9 @@ export function App() {
     setBusy(true);
     setError("");
     try {
-      setTransfer(await client.preview(selectedPlaylist.id));
+      const nextTransfer = await client.preview(selectedPlaylist.id);
+      setTransfer(nextTransfer);
+      setValidation(undefined);
       await refresh();
     } catch (err) {
       setError(messageFor(err));
@@ -168,6 +186,14 @@ export function App() {
     setBusy(true);
     setError("");
     try {
+      const nextValidation = await client.validateTransfer(transfer.id);
+      setValidation(nextValidation);
+      if (nextValidation.errors.length > 0) {
+        throw new Error(validationMessage(nextValidation));
+      }
+      if (nextValidation.warnings.length > 0 && !window.confirm(`${validationMessage(nextValidation)}\n\nStart transfer anyway?`)) {
+        return;
+      }
       setTransfer(await client.start(transfer.id));
       await refresh();
     } catch (err) {
@@ -183,6 +209,7 @@ export function App() {
     setError("");
     try {
       setTransfer(await client.approveMatch(transfer.id, item.id, videoId));
+      setValidation(undefined);
       await refresh();
     } catch (err) {
       setError(messageFor(err));
@@ -197,6 +224,7 @@ export function App() {
     setError("");
     try {
       setTransfer(await client.skipMatch(transfer.id, item.id));
+      setValidation(undefined);
       await refresh();
     } catch (err) {
       setError(messageFor(err));
@@ -211,11 +239,38 @@ export function App() {
     setError("");
     try {
       setTransfer(await client.searchMatch(transfer.id, item.id, query));
+      setValidation(undefined);
       await refresh();
     } catch (err) {
       setError(messageFor(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function bulkReview(action: BulkReviewAction, threshold?: number) {
+    if (!transfer) return;
+    setBusy(true);
+    setError("");
+    try {
+      setTransfer(await client.bulkReview(transfer.id, action, threshold));
+      setValidation(undefined);
+      await refresh();
+    } catch (err) {
+      setError(messageFor(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveReviewState(state: ReviewSessionState) {
+    if (!transfer) return;
+    const nextState = mergeReviewState(transfer.reviewState, state);
+    setTransfer({ ...transfer, reviewState: nextState });
+    try {
+      setTransfer(await client.saveReviewState(transfer.id, nextState));
+    } catch (err) {
+      setError(messageFor(err));
     }
   }
 
@@ -265,7 +320,18 @@ export function App() {
         <aside className="sidebar">
           <AuthPanel auth={auth} />
           {settings?.configDir && <ConfigPanel settings={settings} onOpen={() => void openConfigFolder()} />}
-          <HistoryPanel history={history} onOpen={(id) => void client.transfer(id).then(setTransfer).catch((err) => setError(messageFor(err)))} />
+          <HistoryPanel
+            history={history}
+            onOpen={(id) =>
+              void client
+                .transfer(id)
+                .then((nextTransfer) => {
+                  setTransfer(nextTransfer);
+                  setValidation(undefined);
+                })
+                .catch((err) => setError(messageFor(err)))
+            }
+          />
         </aside>
 
         <section className="main-panel">
@@ -301,12 +367,18 @@ export function App() {
             <TransferView
               transfer={transfer}
               progress={progress}
+              validation={validation}
               busy={busy}
               onStart={() => void startTransfer()}
-              onBack={() => setTransfer(undefined)}
+              onBack={() => {
+                setTransfer(undefined);
+                setValidation(undefined);
+              }}
               onApprove={(item, videoId) => void approveMatch(item, videoId)}
               onSkip={(item) => void skipMatch(item)}
               onSearch={(item, query) => void searchMatch(item, query)}
+              onBulk={(action, threshold) => void bulkReview(action, threshold)}
+              onReviewState={(state) => void saveReviewState(state)}
             />
           )}
         </section>
@@ -617,23 +689,29 @@ function PlaylistPicker({
 function TransferView({
   transfer,
   progress,
+  validation,
   busy,
   onStart,
   onBack,
   onApprove,
   onSkip,
-  onSearch
+  onSearch,
+  onBulk,
+  onReviewState
 }: {
   transfer: TransferDetail;
   progress: ReturnType<typeof calculateTransferProgress> | undefined;
+  validation: TransferValidationResult | undefined;
   busy: boolean;
   onStart: () => void;
   onBack: () => void;
   onApprove: (item: MatchResult, videoId: string) => void;
   onSkip: (item: MatchResult) => void;
   onSearch: (item: MatchResult, query: string) => void;
+  onBulk: (action: BulkReviewAction, threshold?: number) => void;
+  onReviewState: (state: ReviewSessionState) => void;
 }) {
-  const [filter, setFilter] = useState<ReviewFilter>("all");
+  const [filter, setFilter] = useState<ReviewFilter>(transfer.reviewState.activeFilter ?? "all");
   const [activeIndex, setActiveIndex] = useState(0);
   const groups = useMemo(() => groupMatches(transfer.matches), [transfer.matches]);
   const reviewTotal = transfer.approved + transfer.skipped + transfer.unresolved;
@@ -642,9 +720,22 @@ function TransferView({
   const progressView = progress ?? calculateTransferProgress(transfer);
   const visibleItems = useMemo(() => filterMatches(transfer.matches, filter), [filter, transfer.matches]);
   const activeItem = visibleItems[Math.min(activeIndex, Math.max(visibleItems.length - 1, 0))];
+  const canPersistReviewState = !["matching", "running"].includes(transfer.status);
+  const persistReviewState = (state: ReviewSessionState) => {
+    if (canPersistReviewState) onReviewState(state);
+  };
 
   useEffect(() => {
-    setActiveIndex(0);
+    setFilter(transfer.reviewState.activeFilter ?? "all");
+  }, [transfer.id]);
+
+  useEffect(() => {
+    persistReviewState({ activeFilter: filter });
+  }, [filter]);
+
+  useEffect(() => {
+    const savedIndex = visibleItems.findIndex((item) => item.id === transfer.reviewState.activeItemId);
+    setActiveIndex(savedIndex >= 0 ? savedIndex : 0);
   }, [filter, transfer.id]);
 
   useEffect(() => {
@@ -652,6 +743,12 @@ function TransferView({
       setActiveIndex(Math.max(visibleItems.length - 1, 0));
     }
   }, [activeIndex, visibleItems.length]);
+
+  useEffect(() => {
+    if (activeItem?.id) {
+      persistReviewState({ activeItemId: activeItem.id });
+    }
+  }, [activeItem?.id]);
 
   return (
     <>
@@ -689,6 +786,20 @@ function TransferView({
         </div>
       )}
 
+      {validation && (validation.errors.length > 0 || validation.warnings.length > 0) && (
+        <div className={`notice ${validation.errors.length > 0 ? "error" : "warning"} stacked`}>
+          <ShieldAlert size={18} />
+          <div>
+            <strong>Transfer validation</strong>
+            <ul>
+              {[...validation.errors, ...validation.warnings].slice(0, 6).map((issue, index) => (
+                <li key={`${issue.code}-${issue.videoId ?? issue.itemId ?? index}`}>{issue.message}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+
       <div className="progress-wrap">
         <div className="progress-label">
           <span>{progressView.phase === "matching" ? "Matching progress" : "Transfer progress"}</span>
@@ -723,6 +834,25 @@ function TransferView({
           </div>
         </div>
 
+        <div className="bulk-actions">
+          <button className="secondary-button" onClick={() => confirmBulk("approve-best", onBulk)} disabled={busy || transfer.unresolved === 0}>
+            <CheckCheck size={17} />
+            Approve Best
+          </button>
+          <button className="secondary-button" onClick={() => confirmBulk("approve-threshold", onBulk)} disabled={busy || transfer.unresolved === 0}>
+            <Check size={17} />
+            Approve High Confidence
+          </button>
+          <button className="secondary-button" onClick={() => confirmBulk("rerun-unmatched", onBulk)} disabled={busy || transfer.unmatched === 0}>
+            <RefreshCw size={17} />
+            Search Unmatched
+          </button>
+          <button className="secondary-button danger" onClick={() => confirmBulk("skip-remaining", onBulk)} disabled={busy || transfer.unresolved === 0}>
+            <SkipForward size={17} />
+            Skip Remaining
+          </button>
+        </div>
+
         <div className="filter-tabs">
           {filterOptions(groups).map((option) => (
             <button className={filter === option.id ? "active" : ""} key={option.id} onClick={() => setFilter(option.id)}>
@@ -736,9 +866,17 @@ function TransferView({
           <ReviewItem
             item={activeItem}
             busy={busy}
+            selectedCandidateId={activeItem.id ? transfer.reviewState.selectedCandidateIds?.[activeItem.id] : undefined}
+            savedQuery={activeItem.id ? transfer.reviewState.searchQueries?.[activeItem.id] : undefined}
             onApprove={(videoId) => onApprove(activeItem, videoId)}
             onSkip={() => onSkip(activeItem)}
             onSearch={(query) => onSearch(activeItem, query)}
+            onSelectCandidate={(videoId) => {
+              if (activeItem.id) persistReviewState({ selectedCandidateIds: { [activeItem.id]: videoId } });
+            }}
+            onQuerySave={(query) => {
+              if (activeItem.id) persistReviewState({ searchQueries: { [activeItem.id]: query } });
+            }}
           />
         ) : (
           <div className="empty-review">
@@ -756,21 +894,64 @@ function TransferView({
 function ReviewItem({
   item,
   busy,
+  selectedCandidateId,
+  savedQuery,
   onApprove,
   onSkip,
-  onSearch
+  onSearch,
+  onSelectCandidate,
+  onQuerySave
 }: {
   item: MatchResult;
   busy: boolean;
+  selectedCandidateId: string | undefined;
+  savedQuery: string | undefined;
   onApprove: (videoId: string) => void;
   onSkip: () => void;
   onSearch: (query: string) => void;
+  onSelectCandidate: (videoId: string) => void;
+  onQuerySave: (query: string) => void;
 }) {
-  const [query, setQuery] = useState(defaultSearchQuery(item));
+  const [query, setQuery] = useState(savedQuery ?? defaultSearchQuery(item));
+  const selectedVideoId = selectedCandidateId ?? item.selected?.videoId ?? item.candidates[0]?.videoId;
+  const selectedCandidate = item.candidates.find((candidate) => candidate.videoId === selectedVideoId) ?? item.candidates[0];
 
   useEffect(() => {
-    setQuery(defaultSearchQuery(item));
-  }, [item.id]);
+    setQuery(savedQuery ?? defaultSearchQuery(item));
+  }, [item.id, savedQuery]);
+
+  useEffect(() => {
+    if (!selectedCandidate && item.candidates[0]) {
+      onSelectCandidate(item.candidates[0].videoId);
+    }
+  }, [item.id, selectedCandidate?.videoId, item.candidates.length]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target) || item.candidates.length === 0 || busy || item.status === "transferred") return;
+      const currentIndex = Math.max(
+        0,
+        item.candidates.findIndex((candidate) => candidate.videoId === selectedVideoId)
+      );
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        event.preventDefault();
+        const next = item.candidates[Math.min(item.candidates.length - 1, currentIndex + 1)];
+        if (next) onSelectCandidate(next.videoId);
+      }
+      if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        event.preventDefault();
+        const previous = item.candidates[Math.max(0, currentIndex - 1)];
+        if (previous) onSelectCandidate(previous.videoId);
+      }
+      if (event.key === "Enter" && selectedCandidate) {
+        event.preventDefault();
+        onApprove(selectedCandidate.videoId);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [busy, item.candidates, item.status, onApprove, onSelectCandidate, selectedCandidate, selectedVideoId]);
 
   return (
     <div className={`review-card status-${item.status}`}>
@@ -789,12 +970,33 @@ function ReviewItem({
         </div>
       </div>
 
+      <details className="review-diagnostics" open={item.status === "review" || item.status === "unmatched"}>
+        <summary>Why was this flagged?</summary>
+        <ul>
+          {diagnosticReasons(item, selectedCandidate).map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+      </details>
+
       <div className="review-search">
         <label className="search-box">
           <Search size={18} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search YouTube Music" />
+          <input
+            value={query}
+            onBlur={() => onQuerySave(query)}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search YouTube Music"
+          />
         </label>
-        <button className="secondary-button" onClick={() => onSearch(query)} disabled={busy || !query.trim()}>
+        <button
+          className="secondary-button"
+          onClick={() => {
+            onQuerySave(query);
+            onSearch(query);
+          }}
+          disabled={busy || !query.trim()}
+        >
           Search Again
         </button>
         <button className="secondary-button" onClick={onSkip} disabled={busy || item.status === "skipped" || item.status === "transferred"}>
@@ -807,21 +1009,129 @@ function ReviewItem({
           <div className="candidate-empty">No candidates available. Try a different search.</div>
         ) : (
           item.candidates.map((candidate) => (
-            <div className={`candidate-row ${item.selected?.videoId === candidate.videoId ? "selected" : ""}`} key={candidate.videoId}>
-              <div>
-                <strong>{candidate.title}</strong>
+            <div
+              className={`candidate-row ${selectedVideoId === candidate.videoId ? "selected" : ""}`}
+              key={candidate.videoId}
+              onClick={() => onSelectCandidate(candidate.videoId)}
+            >
+              <CandidateThumbnailView candidate={candidate} />
+              <div className="candidate-main">
+                <div className="candidate-title-row">
+                  <strong>{candidate.title}</strong>
+                  <span className="source-pill">{candidate.metadata?.sourceLabel ?? "YouTube Video"}</span>
+                </div>
                 <span>{candidate.channelTitle}</span>
-                <small>{formatDuration(candidate.durationMs)} · {(candidate.score * 100).toFixed(0)}% · {candidate.confidence}</small>
+                <small>{candidateMetadataLine(candidate)}</small>
+                <small>{candidateScoreLine(candidate)}</small>
               </div>
-              <button className="primary-button" onClick={() => onApprove(candidate.videoId)} disabled={busy || item.status === "transferred"}>
-                Approve
-              </button>
+              <div className="candidate-actions">
+                <a
+                  className="icon-button"
+                  href={candidate.metadata?.videoUrl ?? `https://www.youtube.com/watch?v=${candidate.videoId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  title="Open candidate video"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <ExternalLink size={17} />
+                </a>
+                <button
+                  className="primary-button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onApprove(candidate.videoId);
+                  }}
+                  disabled={busy || item.status === "transferred"}
+                >
+                  Approve
+                </button>
+              </div>
             </div>
           ))
         )}
       </div>
     </div>
   );
+}
+
+function CandidateThumbnailView({ candidate }: { candidate: CandidateMatch }) {
+  const thumbnail =
+    candidate.metadata?.thumbnails?.medium?.url ?? candidate.metadata?.thumbnails?.high?.url ?? candidate.metadata?.thumbnails?.default?.url;
+
+  return <div className="candidate-thumb">{thumbnail ? <img src={thumbnail} alt="" /> : <Youtube size={22} />}</div>;
+}
+
+function diagnosticReasons(item: MatchResult, candidate: CandidateMatch | undefined): string[] {
+  const reasons = [
+    ...(item.explanation?.reasons ?? []),
+    ...(candidate?.diagnostics?.reasons ?? [])
+  ];
+  if (reasons.length === 0) {
+    return [item.explanation?.summary ?? item.reason ?? reasonForStatus(item)];
+  }
+  return [...new Set(reasons)].slice(0, 6);
+}
+
+function candidateMetadataLine(candidate: CandidateMatch): string {
+  const parts = [
+    formatDuration(candidate.durationMs),
+    candidate.metadata?.album,
+    candidate.metadata?.releaseYear ? String(candidate.metadata.releaseYear) : undefined,
+    candidate.metadata?.badges?.slice(0, 2).join(" / ")
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function candidateScoreLine(candidate: CandidateMatch): string {
+  const diagnostics = candidate.diagnostics;
+  if (!diagnostics) return `${(candidate.score * 100).toFixed(0)}% · ${candidate.confidence}`;
+
+  return [
+    `Overall ${(diagnostics.overallScore * 100).toFixed(0)}%`,
+    `Title ${(diagnostics.titleSimilarity * 100).toFixed(0)}%`,
+    `Artist ${(diagnostics.artistSimilarity * 100).toFixed(0)}%`,
+    diagnostics.durationSimilarity === undefined ? undefined : `Duration ${(diagnostics.durationSimilarity * 100).toFixed(0)}%`,
+    diagnostics.confidence
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function confirmBulk(action: BulkReviewAction, onBulk: (action: BulkReviewAction, threshold?: number) => void): void {
+  const messages: Record<BulkReviewAction, string> = {
+    "approve-best": "Approve the best candidate for every remaining review item?",
+    "approve-threshold": "Approve all remaining review items above the high-confidence threshold?",
+    "skip-remaining": "Skip every remaining review and unmatched item?",
+    "rerun-unmatched": "Re-run search for all unmatched items? Existing candidates for those items will be replaced."
+  };
+  if (!window.confirm(messages[action])) return;
+  onBulk(action);
+}
+
+function validationMessage(validation: TransferValidationResult): string {
+  const issues = [...validation.errors, ...validation.warnings];
+  if (issues.length === 0) return "Validation passed.";
+  return issues.map((issue) => issue.message).slice(0, 5).join("\n");
+}
+
+function mergeReviewState(current: ReviewSessionState, next: ReviewSessionState): ReviewSessionState {
+  return {
+    ...current,
+    ...next,
+    selectedCandidateIds: {
+      ...(current.selectedCandidateIds ?? {}),
+      ...(next.selectedCandidateIds ?? {})
+    },
+    searchQueries: {
+      ...(current.searchQueries ?? {}),
+      ...(next.searchQueries ?? {})
+    }
+  };
+}
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
 }
 
 function groupMatches(items: MatchResult[]) {

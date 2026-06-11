@@ -1,4 +1,12 @@
-import type { AuthStatus, SourcePlaylist, TransferDetail, TransferSummary } from "@playlist-transfer/shared";
+import type {
+  AuthStatus,
+  BulkReviewAction,
+  ReviewSessionState,
+  SourcePlaylist,
+  TransferDetail,
+  TransferSummary,
+  TransferValidationResult
+} from "@playlist-transfer/shared";
 
 export type DesktopSettings = {
   desktopMode: boolean;
@@ -79,6 +87,17 @@ export const client = {
   start: (id: string) =>
     api<TransferDetail>(`/api/transfers/${id}/start`, {
       method: "POST"
+    }),
+  validateTransfer: (id: string) => api<TransferValidationResult>(`/api/transfers/${id}/validation`),
+  saveReviewState: (id: string, state: ReviewSessionState) =>
+    api<TransferDetail>(`/api/transfers/${id}/review-state`, {
+      method: "PUT",
+      body: JSON.stringify(state)
+    }),
+  bulkReview: (id: string, action: BulkReviewAction, threshold?: number) =>
+    api<TransferDetail>(`/api/transfers/${id}/items/bulk`, {
+      method: "POST",
+      body: JSON.stringify({ action, threshold })
     }),
   approveMatch: (transferId: string, itemId: string, videoId: string) =>
     api<TransferDetail>(`/api/transfers/${transferId}/items/${itemId}/approve`, {

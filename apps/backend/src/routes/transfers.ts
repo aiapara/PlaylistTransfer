@@ -4,11 +4,14 @@ import { listSpotifyPlaylists, getPlaylistTracks } from "../services/spotify.js"
 import {
   approveTransferItem,
   beginTransferExecution,
+  bulkReviewTransferItems,
   createTransfer,
   getTransfer,
   listTransfers,
   searchTransferItemCandidates,
-  skipTransferItem
+  skipTransferItem,
+  updateReviewState,
+  validateTransferSafety
 } from "../services/transfers.js";
 
 type TransferRouteDeps = {
@@ -21,6 +24,9 @@ type TransferRouteDeps = {
   approveTransferItem: typeof approveTransferItem;
   skipTransferItem: typeof skipTransferItem;
   searchTransferItemCandidates: typeof searchTransferItemCandidates;
+  bulkReviewTransferItems: typeof bulkReviewTransferItems;
+  updateReviewState: typeof updateReviewState;
+  validateTransferSafety: typeof validateTransferSafety;
 };
 
 const createSchema = z.object({
@@ -31,6 +37,16 @@ const approveSchema = z.object({
 });
 const searchSchema = z.object({
   query: z.string().trim().optional()
+});
+const bulkReviewSchema = z.object({
+  action: z.enum(["approve-best", "approve-threshold", "skip-remaining", "rerun-unmatched"]),
+  threshold: z.number().min(0).max(1).optional()
+});
+const reviewStateSchema = z.object({
+  activeFilter: z.enum(["all", "matched", "approved", "review", "unmatched", "skipped"]).optional(),
+  activeItemId: z.string().optional(),
+  selectedCandidateIds: z.record(z.string()).optional(),
+  searchQueries: z.record(z.string()).optional()
 });
 
 export function createTransfersRouter(deps: TransferRouteDeps = defaultDeps): Router {
@@ -60,11 +76,37 @@ export function createTransfersRouter(deps: TransferRouteDeps = defaultDeps): Ro
     }
   });
 
-  router.post("/:id/start", (req, res, next) => {
+  router.get("/:id/validation", async (req, res, next) => {
     try {
-      const job = deps.beginTransferExecution(req.params.id);
+      return res.json(await deps.validateTransferSafety(req.params.id, { includeAvailability: true }));
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post("/:id/start", async (req, res, next) => {
+    try {
+      const job = await deps.beginTransferExecution(req.params.id);
       void job.done.catch(() => undefined);
       return res.json(job.transfer);
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.put("/:id/review-state", (req, res, next) => {
+    try {
+      const state = reviewStateSchema.parse(req.body);
+      return res.json(deps.updateReviewState(req.params.id, state));
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  router.post("/:id/items/bulk", async (req, res, next) => {
+    try {
+      const input = bulkReviewSchema.parse(req.body);
+      return res.json(await deps.bulkReviewTransferItems(req.params.id, input));
     } catch (error) {
       return next(error);
     }
@@ -141,7 +183,10 @@ const defaultDeps: TransferRouteDeps = {
   beginTransferExecution,
   approveTransferItem,
   skipTransferItem,
-  searchTransferItemCandidates
+  searchTransferItemCandidates,
+  bulkReviewTransferItems,
+  updateReviewState,
+  validateTransferSafety
 };
 
 export const transfersRouter = createTransfersRouter();

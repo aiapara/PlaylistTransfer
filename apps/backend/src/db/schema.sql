@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS transfers (
   destination_playlist_id TEXT,
   status TEXT NOT NULL,
   total_tracks INTEGER NOT NULL DEFAULT 0,
+  review_state_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -40,6 +41,7 @@ CREATE TABLE IF NOT EXISTS transfer_items (
   added_at TEXT,
   reviewed_at TEXT,
   candidates_json TEXT NOT NULL DEFAULT '[]',
+  explanation_json TEXT,
   FOREIGN KEY (transfer_id) REFERENCES transfers(id) ON DELETE CASCADE
 );
 

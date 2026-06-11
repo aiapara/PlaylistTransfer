@@ -81,6 +81,62 @@ test("matcher scoring prefers direct official-looking candidates over cover resu
   assert.ok(cover.score < direct.score);
 });
 
+test("matcher ranking favors official catalog results over lyric live and remix variants", () => {
+  const track: TrackRef = {
+    sourceId: "spotify-track-ranking",
+    title: "Sweet Disposition",
+    artists: ["The Temper Trap"],
+    album: "Conditions",
+    durationMs: 232000
+  };
+
+  const ranked = matcher.rankCandidates(track, [
+    {
+      videoId: "lyric",
+      title: "The Temper Trap - Sweet Disposition Lyrics",
+      channelTitle: "Lyrics Channel",
+      durationMs: 232000,
+      score: 0,
+      confidence: "low"
+    },
+    {
+      videoId: "live",
+      title: "Sweet Disposition Live at Festival",
+      channelTitle: "Fan Uploads",
+      durationMs: 280000,
+      score: 0,
+      confidence: "low"
+    },
+    {
+      videoId: "remix",
+      title: "Sweet Disposition Remix",
+      channelTitle: "The Temper Trap",
+      durationMs: 245000,
+      score: 0,
+      confidence: "low"
+    },
+    {
+      videoId: "official",
+      title: "The Temper Trap - Sweet Disposition",
+      channelTitle: "The Temper Trap",
+      durationMs: 232000,
+      score: 0,
+      confidence: "low",
+      metadata: {
+        source: "official_track",
+        sourceLabel: "Official Track",
+        album: "Conditions",
+        isOfficialTrack: true,
+        isOfficialArtist: true
+      }
+    }
+  ]);
+
+  assert.equal(ranked[0].videoId, "official");
+  assert.ok(ranked.find((candidate) => candidate.videoId === "lyric")?.diagnostics?.penalties.length);
+  assert.ok(ranked.find((candidate) => candidate.videoId === "live")?.diagnostics?.durationDifferenceMs);
+});
+
 test("YouTube ISO durations parse to milliseconds", () => {
   assert.equal(youtube.parseYouTubeDuration("PT3M45S"), 225000);
   assert.equal(youtube.parseYouTubeDuration("PT1H2M3S"), 3723000);
@@ -182,11 +238,37 @@ test("review decisions persist selected candidates and skipped state", () => {
   assert.ok(skippedItem?.reviewedAt);
 });
 
-test("transfer start is blocked while review items remain unresolved", () => {
+test("transfer start is blocked while review items remain unresolved", async () => {
   insertTransfer("tr_unresolved", "ready");
   insertReviewItem("tr_unresolved", "ti_unresolved");
 
-  assert.throws(() => transfers.beginTransferExecution("tr_unresolved"), /still need review/);
+  await assert.rejects(() => transfers.beginTransferExecution("tr_unresolved"), /still need review/);
+});
+
+test("bulk review can approve best candidates and skip remaining unresolved items", async () => {
+  insertTransfer("tr_bulk", "ready");
+  insertReviewItem("tr_bulk", "ti_bulk_approve");
+  insertReviewItem("tr_bulk", "ti_bulk_skip");
+
+  const approved = await transfers.bulkReviewTransferItems("tr_bulk", { action: "approve-threshold", threshold: 0.6 });
+  assert.equal(approved.approved, 2);
+  assert.equal(approved.unresolved, 0);
+
+  insertReviewItem("tr_bulk", "ti_bulk_skip_2");
+  const skipped = await transfers.bulkReviewTransferItems("tr_bulk", { action: "skip-remaining" });
+  assert.equal(skipped.skipped, 1);
+  assert.equal(skipped.unresolved, 0);
+});
+
+test("transfer validation reports duplicate selected videos", async () => {
+  insertTransfer("tr_validation", "ready");
+  insertMatchedItem("tr_validation", "ti_validation_1", "video-duplicate");
+  insertMatchedItem("tr_validation", "ti_validation_2", "video-duplicate");
+
+  const validation = await transfers.validateTransferSafety("tr_validation");
+
+  assert.equal(validation.ok, true);
+  assert.equal(validation.warnings[0]?.code, "duplicate_video");
 });
 
 test("web mode app creation does not normalize desktop stale transfers", () => {
@@ -201,9 +283,9 @@ test("per-transfer execution lock rejects duplicate start while a run is active"
   insertTransfer("tr_lock", "ready");
   insertMatchedItem("tr_lock", "ti_lock");
 
-  const job = transfers.beginTransferExecution("tr_lock");
+  const job = await transfers.beginTransferExecution("tr_lock");
   assert.equal(job.transfer.status, "running");
-  assert.throws(() => transfers.beginTransferExecution("tr_lock"), /already running/);
+  await assert.rejects(() => transfers.beginTransferExecution("tr_lock"), /already running/);
   await job.done.catch(() => undefined);
 });
 
@@ -237,14 +319,17 @@ test("transfer routes create quickly and surface start conflicts", async () => {
       createTransfer: () => "tr_api",
       getTransfer: (id) => (id === "tr_api" ? detail : undefined),
       listTransfers: () => [detail],
-      beginTransferExecution: () => {
+      beginTransferExecution: async () => {
         const error = new Error("Transfer is already running.") as Error & { status: number };
         error.status = 409;
         throw error;
       },
       approveTransferItem: () => detail,
       skipTransferItem: () => detail,
-      searchTransferItemCandidates: async () => detail
+      searchTransferItemCandidates: async () => detail,
+      bulkReviewTransferItems: async () => detail,
+      updateReviewState: () => detail,
+      validateTransferSafety: async () => ({ ok: true, errors: [], warnings: [], checkedAt: "2026-01-01T00:00:00.000Z" })
     })
   );
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
@@ -279,13 +364,13 @@ function insertTransfer(id: string, status: TransferSummary["status"]): void {
   ).run(id, id, status);
 }
 
-function insertMatchedItem(transferId: string, id: string): void {
+function insertMatchedItem(transferId: string, id: string, videoId = "video-1"): void {
   db.prepare(
     `INSERT INTO transfer_items (
       id, transfer_id, source_track_id, track_title, artists_json, selected_video_id,
       selected_title, selected_channel, score, status, candidates_json
-    ) VALUES (?, ?, 'source-track', 'Song', '["Artist"]', 'video-1', 'Song', 'Artist', 1, 'matched', '[]')`
-  ).run(id, transferId);
+    ) VALUES (?, ?, 'source-track', 'Song', '["Artist"]', ?, 'Song', 'Artist', 1, 'matched', '[]')`
+  ).run(id, transferId, videoId);
 }
 
 function insertReviewItem(transferId: string, id: string): void {
@@ -334,6 +419,7 @@ function transferDetail(overrides: Partial<TransferDetail>): TransferDetail {
     playlistDescription: "",
     matches: [],
     logs: [],
+    reviewState: {},
     ...overrides
   };
 }

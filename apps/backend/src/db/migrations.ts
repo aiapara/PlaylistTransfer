@@ -91,6 +91,14 @@ const migrations: Migration[] = [
       SET reviewed_at = CURRENT_TIMESTAMP
       WHERE status = 'skipped';
     `
+  },
+  {
+    id: 4,
+    name: "review_state_and_explanations",
+    sql: `
+      ALTER TABLE transfers ADD COLUMN review_state_json TEXT NOT NULL DEFAULT '{}';
+      ALTER TABLE transfer_items ADD COLUMN explanation_json TEXT;
+    `
   }
 ];
 
